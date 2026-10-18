@@ -294,3 +294,38 @@ TEST_CASE("mjpeg face_camera in url mode streams through the wrapper") {
     CHECK(f->left->width > 0);
     src->shutdown();
 }
+
+TEST_CASE("face_camera in pc mode opens no camera and keeps its tracking switch") {
+    const std::string jpeg = read_jpeg();
+    TestServer server(jpeg);
+    json threads = json::object();
+    LatestSlot<StereoFrame> slot;
+    StatsRegistry stats;
+    json cfg = stream_cfg(server.url());
+    cfg["type"] = "face_camera";
+    cfg["mode"] = "pc";
+    auto src = make_tracking_source(cfg, SourceDeps{"mouth", threads, slot, stats, nullptr, nullptr});
+    REQUIRE(src);
+    // Tracking stays on, so the PC link still claims face tracking, but nothing streams.
+    CHECK(src->tracking());
+    for (int i = 0; i < 20; i++) {
+        src->tick(mono_ns());
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK_FALSE(src->streaming());
+    CHECK(src->activity() == SourceActivity::Off);
+    CHECK_FALSE(slot.take());
+    src->set_tracking(false);
+    CHECK_FALSE(src->tracking());
+    src->set_tracking(true);
+
+    // A live change to the URL mode streams, and a change back stops it.
+    REQUIRE(src->set_option("mode", "url"));
+    auto f = next_frame(*src, slot);
+    REQUIRE(f);
+    REQUIRE(src->set_option("mode", "pc"));
+    CHECK_FALSE(src->streaming());
+    CHECK(src->tracking());
+    CHECK_FALSE(src->set_option("mode", "wifi"));
+    src->shutdown();
+}

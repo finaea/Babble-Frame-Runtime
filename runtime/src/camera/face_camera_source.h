@@ -11,8 +11,9 @@ namespace babble {
 
 class BabbleUsbSource;
 
-// The mouth camera, which is either the USB camera (mode "usb") or an MJPEG stream over HTTP (mode "url").
-// It owns one of the two sources and changes between them live, and the URL mode never opens USB.
+// The mouth camera, which is either the USB camera (mode "usb") or an MJPEG stream over HTTP (mode "url"), or no camera
+// because an app on the PC sends the mouth (mode "pc"). It owns one source and changes between them live, and only the
+// USB mode opens USB.
 class FaceCameraSource : public ITrackingSource {
 public:
     FaceCameraSource(const nlohmann::json &cfg, SourceDeps deps);

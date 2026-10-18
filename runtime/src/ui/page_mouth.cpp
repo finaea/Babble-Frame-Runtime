@@ -51,9 +51,10 @@ void DashboardView::render_mouth(Canvas &c) {
         c.fill_rect(view, kBg, 4);
         c.stroke_rect(view, kLine, 4, 1);
         const auto &img = fork_.data.preview;
-        const bool url_mode = setting("/sources/face/mode", "usb") == "url";
+        const json mode = setting("/sources/face/mode", "usb");
+        const bool url_mode = mode == "url", pc_mode = mode == "pc";
         const std::string url = setting("/sources/face/url", "").get<std::string>();
-        if (img && img->width && img->height) {
+        if (!pc_mode && img && img->width && img->height) {
             PreviewTransform tf;
             tf.w = float(img->width);
             tf.h = float(img->height);
@@ -113,11 +114,14 @@ void DashboardView::render_mouth(Canvas &c) {
                          double(src.w), double(src.h));
             regular_.draw(c, kMargin, 572, buf, 20, kText);
         } else {
-            const std::string msg = url_mode && url.empty() ? "Set a stream URL" : url_mode ? "Waiting for the stream"
-                                                                                            : "Waiting for the camera";
+            const std::string msg = pc_mode                   ? "The PC app sends the mouth"
+                                    : url_mode && url.empty() ? "Set a stream URL"
+                                    : url_mode                ? "Waiting for the stream"
+                                                              : "Waiting for the camera";
             regular_.draw(c, view.x + (view.w - regular_.measure(msg, 24)) / 2, view.y + view.h / 2, msg, 24, kMuted);
         }
-        regular_.draw(c, kMargin, 600, "Drag the box to crop. Drag its corner to resize.", 19, kMuted);
+        if (!pc_mode)
+            regular_.draw(c, kMargin, 600, "Drag the box to crop. Drag its corner to resize.", 19, kMuted);
 
         const float x = 488, cw = W - kMargin - x, right = W - kMargin - 12;
         float y = 140;
@@ -129,9 +133,15 @@ void DashboardView::render_mouth(Canvas &c) {
             if (!hint.empty())
                 regular_.draw(c, x + 20, y + 76, fit(regular_, hint, 20, hint_w), 20, kMuted);
         };
-        card(104, "Camera", url_mode ? "An MJPEG stream (mouthcam)." : "Finds a Babble tracker.", 300);
-        render_value_segments(c, right, y + 16, "/sources/face/mode", {"USB", "Stream URL"}, {"usb", "url"}, 150);
-        y += 104;
+        // Three modes need the card's width, so the hint goes on a line under them.
+        const char *camera_hint = pc_mode    ? "Baballonia on the PC sends it. No camera runs here."
+                                  : url_mode ? "An MJPEG stream (mouthcam)."
+                                             : "Finds a Babble tracker.";
+        card(136, "Camera", "", 0);
+        render_value_segments(c, right, y + 16, "/sources/face/mode", {"USB", "Stream URL", "PC App"}, {"usb", "url", "pc"},
+                              150);
+        regular_.draw(c, x + 20, y + 114, fit(regular_, camera_hint, 20, cw - 40), 20, kMuted);
+        y += 136;
         card(132, "Stream URL", "", 0);
         if (!url_mode)
             regular_.draw(c, x + 200, y + 44, "Used when Camera is Stream URL.", 20, kMuted);
@@ -144,7 +154,8 @@ void DashboardView::render_mouth(Canvas &c) {
         card(88, "Flip", "", 0);
         render_value_segments(c, right, y + 8, "/pipelines/face/flip", {"None", "Mirror", "Vertical", "Both"},
                               {"none", "h", "v", "hv"}, 112);
-        render_small_button(c, W - kMargin, kBottomY, "Whole Frame", "crop:whole");
+        if (!pc_mode)
+            render_small_button(c, W - kMargin, kBottomY, "Whole Frame", "crop:whole");
         return;
     }
 

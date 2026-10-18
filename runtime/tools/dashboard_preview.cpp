@@ -291,6 +291,16 @@ int main(int argc, char **argv) {
         view.set_page_data(data({}));
         view.render(c, tracking, fork_choices, std::nullopt);
         save(c, "mouth_shapes_auto");
+
+        // The PC app mode: Baballonia on the PC sends the mouth, so there is no preview.
+        (*cfg)["sources"]["face"]["mode"] = "pc";
+        view.click({920, 76});   // The Camera tab.
+        view.set_page_data(data({}, true));
+        view.render(c, tracking, fork_choices, std::nullopt);
+        save(c, "mouth_camera_pc_app");
+        view.set_page(DashboardView::Page::Home);
+        view.render(c, release, choices, std::nullopt);
+        save(c, "home_pc_app");
     }
 
     // Measure the render cost for each redraw on the dashboard thread.
