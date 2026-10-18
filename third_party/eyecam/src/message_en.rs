@@ -1,0 +1,339 @@
+//! English versions of the Japanese status messages (status.json `message_en`, for the panel's English display).
+//! Every message eyecam-rec shows is translated here, in one place, from the Japanese text it builds; the test lists
+//! them all. Unknown text comes back unchanged.
+
+/// Fixed messages.
+const EXACT: &[(&str, &str)] = &[
+    ("待機中", "Idle"),
+    ("目の値を出しているよ", "Sending eye values"),
+    ("見開きの基準を覚えているところ（目を開けて、ふつうに前を見ていてね）", "Learning your normal eye opening (keep your eyes open and look ahead)"),
+    ("見開きの幅がまだわからないので仮の値。一度だけ calib wear をしてね", "Widening width not known yet, using a default. Please calibrate the eye camera once"),
+    ("HMD をかぶってね（目の映像を待ってるよ）", "Put the headset on (waiting for the eye cameras)"),
+    ("HMD をかぶってね", "Put the headset on"),
+    ("パネルの「目のカメラ」タブで、目のカメラの道具を入れてね", "Install the eye camera tool from the panel's Eye cameras tab"),
+    ("eyecam-rec は止まっている", "eyecam-rec is stopped"),
+    ("録画中", "Recording"),
+    ("校正中", "Calibrating"),
+    ("中止した", "Cancelled"),
+    ("校正を中止した", "Calibration cancelled"),
+    ("校正できた（かぶり）", "Calibrated"),
+    ("校正できた（見開きは取れなかったので、いつもの幅を使うよ）", "Calibrated (couldn't measure widening, using the usual width)"),
+    ("校正できた（ユーザー）", "Calibrated (user)"),
+    ("瞳孔の範囲を保存した", "Saved the pupil range"),
+    ("瞳孔の範囲は測れなかった", "Couldn't measure the pupil range"),
+    ("校正中じゃない", "Not calibrating"),
+    ("先に calib wear をしてね", "Calibrate the eye camera first"),
+    ("途中で止めた", "Stopped partway"),
+    ("校正の計算が終わらなかった", "The calibration didn't finish"),
+    ("止めた（途中まで保存）", "Stopped (saved so far)"),
+    ("中断した（Ctrl-C / SIGTERM）", "Interrupted (Ctrl-C / SIGTERM)"),
+    ("stop で止めた", "Stopped"),
+    ("アイトラッカーが終了した", "The eye tracker exited"),
+    ("バッファが更新されなくなった", "The buffers stopped updating"),
+    ("目の映像が見つからなかった（ヘッドセットをかぶってから start してね）", "Couldn't find the eye cameras (put the headset on, then start)"),
+    ("ディスクの空きが 1 GB 未満", "Less than 1 GB of disk space left"),
+    ("録画時間が終わった", "Recording time is over"),
+    ("片目しか映っていない（ちゃんとかぶれてる？）", "Only one eye is visible (is the headset on properly?)"),
+    ("目の映像がまだ流れていない（SteamVR の視線トラッキングはオン？）", "No eye video yet (is eye tracking on in SteamVR?)"),
+    ("自動でバッファを取りに行くよ（アイトラッキングが始まるのを待ってる）", "Getting the buffers automatically (waiting for eye tracking to start)"),
+    ("自動でバッファを取りに行ってる…", "Getting the buffers automatically…"),
+    ("視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度", "Couldn't get the gaze direction from Valve. Check that frameeyeosc is running and try again"),
+    ("視線と目の開きの関係が求められなかった（もう一度）", "Couldn't work out how gaze changes the eye opening (try again)"),
+    ("目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ", "The eye preview is only written to a folder in memory (tmpfs)"),
+    ("ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で", "The drift log's name must be eyes_YYYY-MM-DD_HH-MM-SS"),
+    ("目の値を出していないので、普段の目を覚え直せない", "Not reading the eye cameras, so can't relearn your eyes"),
+    ("目の映像が来ていないので、普段の目を覚え直せない", "No eye video, so can't relearn your eyes"),
+    ("校正中なので、普段の目を覚え直せない", "Calibrating, so can't relearn your eyes now"),
+];
+
+/// Per-eye calibration failures, after "左目" / "右目" / "両目" (the details in [...] follow).
+const EYE: &[(&str, &str)] = &[
+    ("の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）", "couldn't see the pupil well (adjust the headset and try again)"),
+    ("の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）", "couldn't find the upper eyelid line (adjust the headset and try again)"),
+    ("のまぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）", "couldn't find the eyelid lines (adjust the headset and try again)"),
+    ("を閉じたのが検出できなかった（もう一度、しっかり閉じてね）", "couldn't detect the eye closing (try again and close it firmly)"),
+    ("の細めが測れなかった（もう一度）", "couldn't measure the squint (try again)"),
+    ("の細めが浅かった（もう一度、しっかり細めてね）", "the squint was too shallow (try again and squint harder)"),
+    (": 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）", "looking down didn't change the eye opening (try again and look down clearly)"),
+    (": 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）", "the lower lid moved up when looking down (maybe a detection error; try again)"),
+];
+
+/// Prefixes followed by a name or reason that is kept as it is.
+const PREFIX: &[(&str, &str)] = &[
+    ("保存した（途中で止めた）: ", "Saved (stopped early): "),
+    ("保存した: ", "Saved: "),
+    ("バッファを受け取れなかった: ", "Couldn't get the buffers: "),
+    ("失敗した: ", "Failed: "),
+    ("保存できなかった: ", "Couldn't save: "),
+    ("プロトコルが見つからない: ", "Protocol not found: "),
+    ("ドリフトの記録を始められなかった: ", "Couldn't start the drift log: "),
+];
+
+/// The eyes a message can start with.
+const EYES: [(&str, &str); 3] = [("左目", "Left eye"), ("右目", "Right eye"), ("両目", "Both eyes")];
+
+/// Notes in a wear calibration that went through ("校正できた（<note>。<note>）[details]"), after "左目は" / "右目は"
+/// for an eye that failed.
+const NOTE_REASON: &[(&str, &str)] = &[
+    ("瞳がうまく見えなかったので、", "couldn't see the pupil well, "),
+    ("上まぶたの線が見つからなかったので、", "couldn't find the upper eyelid line, "),
+    ("閉じたのが検出できなかったので、", "couldn't detect the eye closing, "),
+];
+const NOTE_SOURCE: &[(&str, &str)] = &[("前の値を使うよ", "using its previous values"), ("仮の値を使うよ", "using provisional values")];
+
+/// Words inside the [...] details of calibration messages.
+fn details(s: &str) -> String {
+    s.replace("下を見たとき", "looking down")
+        .replace("細め", "squint")
+        .replace("普段", "normal")
+        .replace("左 ", "L ")
+        .replace("右 ", "R ")
+        .replace("必要", "needed")
+        .replace(['・', '、'], ", ")
+}
+
+/// "body[details]" -> (body, " [translated details]").
+fn split_details(s: &str) -> (&str, String) {
+    match s.find('[') {
+        Some(i) => (&s[..i], format!(" {}", details(&s[i..]))),
+        None => (s, String::new()),
+    }
+}
+
+/// Split at "。" outside （…） and […].
+fn split_sentences(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0i32, 0);
+    for (i, c) in s.char_indices() {
+        match c {
+            '（' | '[' => depth += 1,
+            '）' | ']' => depth -= 1,
+            '。' if depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
+fn has_japanese(s: &str) -> bool {
+    s.chars().any(|c| matches!(c as u32, 0x3040..=0x30FF | 0x4E00..=0x9FFF | 0xFF01..=0xFF60))
+}
+
+/// One note of a wear calibration that went through.
+fn note_en(note: &str) -> Option<String> {
+    if note == crate::live::NOTE_WIDEN {
+        return Some("couldn't measure widening, using the usual width".into());
+    }
+    let (eye_en, rest) = EYES[..2].iter().find_map(|(j, en)| Some((*en, note.strip_prefix(j)?.strip_prefix('は')?)))?;
+    let (why, rest) = NOTE_REASON.iter().find_map(|(j, en)| Some((*en, rest.strip_prefix(j)?)))?;
+    let src = NOTE_SOURCE.iter().find(|(j, _)| *j == rest)?.1;
+    Some(format!("{eye_en}: {why}{src}"))
+}
+
+/// The English for one Japanese message.
+pub fn message_en(ja: &str) -> String {
+    if let Some(rest) = ja.strip_prefix("（fake）") {
+        return format!("(fake) {}", message_en(rest));
+    }
+    if let Some(&(_, en)) = EXACT.iter().find(|(j, _)| *j == ja) {
+        return en.to_string();
+    }
+    // The note after a failed calibration when the cameras deliver few frames (live::rate_note), alone or after
+    // the message.
+    let rate = |s: &str| s.strip_prefix("カメラの映像が毎秒 ")?.strip_suffix(" 枚しか届いていない").map(str::to_string);
+    if let Some(n) = rate(ja) {
+        return format!("The eye cameras deliver only {n} frames a second");
+    }
+    if let Some((head, tail)) = ja.rsplit_once('。')
+        && let Some(n) = rate(tail)
+    {
+        return format!("{}. The eye cameras deliver only {n} frames a second", message_en(head));
+    }
+    // "<reason>（途中まで保存: <session>）"
+    if let Some(body) = ja.strip_suffix('）')
+        && let Some((head, name)) = body.rsplit_once("（途中まで保存: ")
+    {
+        return format!("{} (saved so far: {name})", message_en(head));
+    }
+    if let Some(rest) = ja.strip_prefix("校正できた（ユーザー）。注意: ") {
+        // The warnings (joined with 、) are the left/right difference check's.
+        return format!("Calibrated (user). Note: {}", details(&rest.replace("左右の差が大きい", "Large left/right difference")));
+    }
+    if let Some(rest) = ja.strip_prefix("左右の差が大きい") {
+        return format!("Large left/right difference{}", details(rest));
+    }
+    // "校正できた（<note>。<note>）[details]": a wear calibration that went through with an eye's earlier levels or the
+    // usual widen.
+    if let Some(rest) = ja.strip_prefix("校正できた（") {
+        let (body, detail) = split_details(rest);
+        if let Some(notes) = body.strip_suffix('）').and_then(|b| b.split('。').map(note_en).collect::<Option<Vec<String>>>()) {
+            let notes: Vec<String> = notes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| if i == 0 { n.clone() } else { n[..1].to_uppercase() + &n[1..] })
+                .collect();
+            return format!("Calibrated ({}){detail}", notes.join(". "));
+        }
+    }
+    if let Some(why) = ja.strip_prefix("自動でバッファを取れなかった: ") {
+        return format!("Couldn't get the buffers automatically: {why}");
+    }
+    // "<why the buffers were dropped>。<how to get them again>" (waiting_fds after an abort)
+    if let Some((head, tail)) = ja.split_once('。')
+        && EXACT.iter().any(|(j, _)| *j == head)
+        && EXACT.iter().any(|(j, _)| *j == tail)
+    {
+        return format!("{}. {}", message_en(head), message_en(tail));
+    }
+    if let Some((name, e)) = ja.split_once(".txt の書き方がおかしい: ") {
+        return format!("{name}.txt is malformed: {e}");
+    }
+    // Several messages (one per eye) joined with "。".
+    let parts = split_sentences(ja);
+    if parts.len() > 1 {
+        let en: Vec<String> = parts.iter().map(|p| message_en(p)).collect();
+        if !en.iter().any(|e| has_japanese(e)) {
+            return en.join(". ");
+        }
+    }
+    for (eye_ja, eye_en) in EYES {
+        if let Some(rest) = ja.strip_prefix(eye_ja) {
+            let (body, detail) = split_details(rest);
+            if let Some(&(_, en)) = EYE.iter().find(|(j, _)| *j == body) {
+                return format!("{eye_en}: {en}{detail}");
+            }
+        }
+    }
+    for (j, en) in PREFIX {
+        if let Some(rest) = ja.strip_prefix(j) {
+            return format!("{en}{rest}");
+        }
+    }
+    ja.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_message_has_english() {
+        let all = [
+            "待機中",
+            "目の値を出しているよ",
+            "見開きの基準を覚えているところ（目を開けて、ふつうに前を見ていてね）",
+            "見開きの幅がまだわからないので仮の値。一度だけ calib wear をしてね",
+            "HMD をかぶってね（目の映像を待ってるよ）",
+            "（fake）HMD をかぶってね（目の映像を待ってるよ）",
+            "（fake）パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
+            "（fake）校正できた（かぶり）",
+            "（fake）保存した（途中で止めた）: rec_fake",
+            "パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
+            "eyecam-rec は止まっている",
+            "録画中",
+            "校正中",
+            "中止した",
+            "校正を中止した",
+            "校正できた（かぶり）",
+            "校正できた（見開きは取れなかったので、いつもの幅を使うよ）",
+            "校正できた（ユーザー）",
+            "校正できた（ユーザー）。注意: 左右の差が大きい [下を見たとき 0.39、細め 0.08]",
+            "瞳孔の範囲を保存した",
+            "瞳孔の範囲は測れなかった",
+            "先に calib wear をしてね",
+            "保存した: rec_2026-10-04_10-00-00",
+            "保存した（途中で止めた）: rec_2026-10-04_10-00-00",
+            "目の映像が見つからなかった（ヘッドセットをかぶってから start してね）（途中まで保存: rec_x）",
+            "ディスクの空きが 1 GB 未満",
+            "失敗した: disk I/O error",
+            "バッファを受け取れなかった: bad message",
+            "自動でバッファを取りに行くよ（アイトラッキングが始まるのを待ってる）",
+            "自動でバッファを取りに行ってる…",
+            "自動でバッファを取れなかった: pidfd_getfd: Operation not permitted",
+            "片目しか映っていない（ちゃんとかぶれてる？）",
+            "目の映像がまだ流れていない（SteamVR の視線トラッキングはオン？）",
+            "（fake）目の映像がまだ流れていない（SteamVR の視線トラッキングはオン？）",
+            "（fake）片目しか映っていない（ちゃんとかぶれてる？）",
+            "（fake）校正できた（左目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]",
+            "（fake）両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]",
+            "アイトラッカーが終了した。パネルの「目のカメラ」タブで、目のカメラの道具を入れてね",
+            "バッファが更新されなくなった",
+            "目のプレビューは、メモリの上のフォルダ（tmpfs）にしか書かないよ",
+            "校正の計算が終わらなかった",
+            "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）",
+            "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]",
+            "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]",
+            "右目の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[40/486、90 必要]",
+            "両目の上まぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[左 40/486・右 60/486、90 必要]",
+            "左目のまぶたの線が見つからなかった（HMD のかぶり方を直して、もう一度）[100/900、150 必要]",
+            "両目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）",
+            "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]。右目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）",
+            "両目の細めが測れなかった（もう一度）",
+            "両目の細めが浅かった（もう一度、しっかり細めてね）[左 f_sq 0.91・右 f_sq 0.88]",
+            "両目: 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）[左 240.0 px / 普段 250.0 px・右 241.0 px / 普段 251.0 px]",
+            "左目の細めが浅かった（もう一度、しっかり細めてね）[f_sq 0.91]。右目: 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）[240.0 px / 普段 250.0 px]",
+            "校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ）[12/486、90 必要]",
+            "校正できた（左目は上まぶたの線が見つからなかったので、仮の値を使うよ。見開きは取れなかったので、いつもの幅を使うよ）[40/486、90 必要]",
+            "校正できた（右目は閉じたのが検出できなかったので、前の値を使うよ）",
+            "右目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）",
+            "左目の細めが測れなかった（もう一度）",
+            "右目の細めが浅かった（もう一度、しっかり細めてね）[f_sq 0.91]",
+            "左目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）[1.54 / 普段 1.47]",
+            "右目: 下を見たら下まぶたが上に動いた（検出の失敗かも。もう一度）[240.0 px / 普段 250.0 px]",
+            "視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度",
+            "視線と目の開きの関係が求められなかった（もう一度）",
+            "両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 5/81・右 3/81、15 必要]。カメラの映像が毎秒 15 枚しか届いていない",
+            "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[5/81、15 必要]。右目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[3/97、18 必要]。カメラの映像が毎秒 15 枚しか届いていない",
+            "左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[0/159、25 必要]。カメラの映像が毎秒 15 枚しか届いていない",
+            "視線の向き（Valve）が取れなかった。frameeyeosc が動いているか確かめて、もう一度。カメラの映像が毎秒 15 枚しか届いていない",
+            "（fake）両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 5/81・右 3/81、15 必要]。カメラの映像が毎秒 15 枚しか届いていない",
+            "カメラの映像が毎秒 15 枚しか届いていない",
+            "protocol_x.txt の書き方がおかしい: line 3",
+            "プロトコルが見つからない: protocol_x.txt",
+            "ドリフトの記録を始められなかった: /home/steamos/eyecam/drift: Permission denied (os error 13)",
+            "ドリフトの記録の名前は eyes_YYYY-MM-DD_HH-MM-SS の形で",
+            crate::livesvc::RELEARN_NOT_LIVE,
+            crate::livesvc::RELEARN_NO_VIDEO,
+            crate::livesvc::RELEARN_CALIBRATING,
+        ];
+        for ja in all {
+            let en = message_en(ja);
+            assert!(!has_japanese(&en), "{ja} -> {en}");
+        }
+        assert_eq!(message_en("校正できた（かぶり）"), "Calibrated");
+        assert_eq!(message_en("保存した: rec_a"), "Saved: rec_a");
+        assert_eq!(
+            message_en("左目: 下を見ても目の開きが変わっていない（もう一度、しっかり下を見てね）[1.54 / 普段 1.47]"),
+            "Left eye: looking down didn't change the eye opening (try again and look down clearly) [1.54 / normal 1.47]"
+        );
+        assert_eq!(message_en(""), "");
+        assert_eq!(
+            message_en("両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 12/486・右 30/486、90 必要]"),
+            "Both eyes: couldn't see the pupil well (adjust the headset and try again) [L 12/486, R 30/486, 90 needed]"
+        );
+        assert_eq!(
+            message_en("左目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[12/486、90 必要]。右目を閉じたのが検出できなかった（もう一度、しっかり閉じてね）"),
+            "Left eye: couldn't see the pupil well (adjust the headset and try again) [12/486, 90 needed]. Right eye: couldn't detect the eye closing (try again and close it firmly)"
+        );
+        assert_eq!(
+            message_en("校正できた（右目は瞳がうまく見えなかったので、前の値を使うよ。見開きは取れなかったので、いつもの幅を使うよ）[12/486、90 必要]"),
+            "Calibrated (Right eye: couldn't see the pupil well, using its previous values. Couldn't measure widening, using the usual width) [12/486, 90 needed]"
+        );
+        assert_eq!(
+            message_en("両目の瞳がうまく見えなかった（HMD のかぶり方を直して、もう一度）[左 81/81・右 81/81、15 必要]。カメラの映像が毎秒 15 枚しか届いていない"),
+            "Both eyes: couldn't see the pupil well (adjust the headset and try again) [L 81/81, R 81/81, 15 needed]. The eye cameras deliver only 15 frames a second"
+        );
+        assert_eq!(
+            message_en(&format!("{}。{}", crate::live::MSG_NO_GAZE, crate::live::rate_note(15.0).unwrap())),
+            "Couldn't get the gaze direction from Valve. Check that frameeyeosc is running and try again. The eye cameras deliver only 15 frames a second"
+        );
+        assert_eq!(
+            message_en("校正できた（見開きは取れなかったので、いつもの幅を使うよ）"),
+            "Calibrated (couldn't measure widening, using the usual width)"
+        );
+    }
+}
