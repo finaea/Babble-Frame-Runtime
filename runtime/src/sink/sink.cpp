@@ -3,6 +3,8 @@
 #include "core/log.h"
 #include "sink/camera_stream_sink.h"
 #include "sink/debug_sink.h"
+#include "sink/eyecam_squint_sink.h"
+#include "sink/frame_preview_sink.h"
 #include "sink/link_sink.h"
 #include "sink/osc_sink.h"
 #include "sink/plugin_sink.h"
@@ -31,6 +33,10 @@ std::unique_ptr<ISink> make_sink(const nlohmann::json &cfg, SinkDeps deps) {
         return std::make_unique<VrcNativeSink>(cfg, std::move(deps));
     if (type == "record")
         return std::make_unique<RecordSink>(cfg, std::move(deps));
+    if (type == "eyecam_squint")
+        return std::make_unique<EyecamSquintSink>(cfg, std::move(deps));
+    if (type == "frame_preview")
+        return std::make_unique<FramePreviewSink>(cfg, std::move(deps));
     LOG.error("sink %s: unknown type '%s'", deps.name.c_str(), type.c_str());
     return nullptr;
 }

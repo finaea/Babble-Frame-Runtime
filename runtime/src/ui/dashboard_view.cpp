@@ -132,6 +132,12 @@ void DashboardView::render(Canvas &c, const Status &status, const std::vector<Ch
         render_cameras(c, status);
     } else if (page_ == Page::Diagnostics) {
         render_diagnostics(c, choices, status);
+    } else if (page_ == Page::Eyes) {
+        render_eyes(c, choices);
+    } else if (page_ == Page::Squint) {
+        render_squint(c, choices);
+    } else if (page_ == Page::Mouth) {
+        render_mouth(c);
     } else {
         render_settings(c, choices, status);
     }
@@ -354,13 +360,15 @@ void DashboardView::render_settings(Canvas &c, const std::vector<Choice> &choice
     const float W = float(c.width());
     render_back(c, "Settings");
     render_restart_button(c);
-    hits_.push_back({Hit::OpenDiagnostics, render_button(c, W - kMargin, 42, "Diagnostics", false)});
+    const Rect diagnostics = render_button(c, W - kMargin, 42, "Diagnostics", false);
+    hits_.push_back({Hit::OpenDiagnostics, diagnostics});
+    render_page_buttons(c, diagnostics.x - 16);
 
     float y = 160;
     for (size_t i = 0; i < choices.size(); i++) {
         const Choice &ch = choices[i];
-        if (ch.diagnostics)
-            continue;
+        if (ch.diagnostics || (!ch.page.empty() && ch.page != "settings"))
+            continue;   // This row is on another page.
         if (ch.boolean) {
             render_switch_row(c, y, i, ch);
             y += 124;
@@ -710,7 +718,7 @@ DashboardView::ClickResult DashboardView::click(Point p) {
             break;
         case Hit::Back:
             restart_armed_until_ns_ = 0;
-            page_ = page_ == Page::Cameras || page_ == Page::Diagnostics ? Page::Settings : Page::Home;
+            page_ = page_ == Page::Cameras || page_ == Page::Diagnostics || live_page() ? Page::Settings : Page::Home;
             out.redraw = true;
             break;
         case Hit::OpenDiagnostics:
@@ -775,6 +783,9 @@ DashboardView::ClickResult DashboardView::click(Point p) {
             break;
         case Hit::Visualizer:
             out.visualizer = true;
+            break;
+        case Hit::Fork:
+            click_fork(h, out, p);
             break;
         case Hit::Restart: {
             const uint64_t now = mono_ns();

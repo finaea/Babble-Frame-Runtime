@@ -33,6 +33,7 @@ public:
         float width_m = 1.6f;
         ExpressionState *state = nullptr;   // The source of the eye panel data, or null for no data.
         std::string mouth_tracking_id = "/sources/mouth/tracking";   // The setting that the mouth card switch changes.
+        FramePreviewSink *preview = nullptr;   // The face frames for the Mouth page, or null for no preview.
     };
     ~Dashboard();
 
@@ -46,6 +47,8 @@ public:
     // Call these functions from the main thread only.
     void set_status(const Status &s);
     void set_choice(const std::string &id, double value);
+    // Gives the Eyes, Squint and Mouth pages the current config for their ranges, modes and URL.
+    void set_config(const nlohmann::json &cfg);
     // Returns the settings that changed on the panel since the last call, as pairs of JSON pointer and new value.
     std::vector<std::pair<std::string, nlohmann::json>> take_changes();
     // Returns true one time for each click on the visualizer button.
@@ -71,8 +74,11 @@ private:
     bool create_overlays();
     void destroy_overlays();
     void present();
+    void show_keyboard(const std::string &text);   // Opens the SteamVR keyboard for the stream URL.
     // Reads the eye panel values from ExpressionState and changes the gaze to degrees.
     std::array<EyeReading, 2> read_eyes() const;
+    // Reads the config, the signals and the preview frame for the Eyes, Squint and Mouth pages.
+    PageData read_page_data();
     // The number of signals for each eye.
     static constexpr int kPerEye = 8;
     std::array<SignalId, 2 * kPerEye> eye_ids_{};
@@ -85,10 +91,11 @@ private:
     std::thread thread_;
     std::atomic<bool> stop_{false};
 
-    std::mutex mutex_;   // This mutex guards status_, choices_, changes_ and dirty_.
+    std::mutex mutex_;   // This mutex guards status_, choices_, changes_, config_ and dirty_.
     Status status_;
     std::vector<Choice> choices_;
     std::vector<std::pair<std::string, nlohmann::json>> changes_;
+    std::shared_ptr<const nlohmann::json> config_;
     bool dirty_ = true;
     std::atomic<bool> visualizer_request_{false};
     std::atomic<bool> restart_request_{false};

@@ -1,0 +1,19 @@
+[package]
+name = "eyecam_ffi"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+# Built by runtime/CMakeLists.txt, not part of any workspace.
+[workspace]
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+eyecam = { path = "../../third_party/eyecam" }
+libc = "0.2"
+
+[profile.release]
+debug = false

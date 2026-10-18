@@ -12,6 +12,8 @@
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
+#include <map>
+#include <memory>
 #include <string>
 
 using namespace babble;
@@ -181,6 +183,115 @@ int main(int argc, char **argv) {
     view.click({1100, 666});
     view.render(c, tracking, choices, std::nullopt);
     save(c, "settings_restart_confirmation");
+
+    // Show the Eyes, Squint calibration and Mouth pages with a demo config, demo signals and a demo face frame.
+    {
+        auto cfg = std::make_shared<nlohmann::json>(nlohmann::json::parse(R"({
+            "sources": {"face": {"mode": "url", "url": "http://127.0.0.1:8082/"}},
+            "pipelines": {
+                "eye": {"ranges": {"LeftEyeLid": [0.1, 0.9], "RightEyeLid": [0, 0.85], "LeftEyeWiden": [0.2, 1],
+                                   "RightEyeWiden": [0, 1], "LeftEyeDilation": [0, 1], "RightEyeDilation": [0.3, 0.7]}},
+                "gaze": {"ranges": {"LeftEyeX": [-0.8, 0.8], "RightEyeX": [-1, 1], "LeftEyeY": [-0.6, 1], "RightEyeY": [-1, 1]}},
+                "face": {"roi": [40, 30, 160, 160], "rotate": 0, "flip": "none",
+                         "calibration": {"mode": "manual", "ranges": {"jawOpen": [0.05, 0.8], "mouthSmileLeft": [0.1, 0.7]}}}},
+            "sinks": {"squint": {"ranges": {"LeftEyeSquint": [0.15, 0.9], "RightEyeSquint": [0, 1]}}}
+        })"));
+        std::map<std::string, LiveSignal> live;
+        for (const auto &[name, v] : std::initializer_list<std::pair<const char *, float>>{
+                 {"_LeftEyeLidPre", 0.62f}, {"_RightEyeLidPre", 0.58f}, {"_LeftEyeWidenPre", 0.12f},
+                 {"_RightEyeWidenPre", 0.05f}, {"_LeftEyeSquintPre", 0.4f}, {"_RightEyeSquintPre", 0.35f},
+                 {"_LeftEyeDilationPre", 0.5f}, {"_RightEyeDilationPre", 0.55f}, {"_LeftEyeXPre", -0.3f},
+                 {"_RightEyeXPre", -0.25f}, {"_LeftEyeYPre", 0.1f}, {"_RightEyeYPre", 0.12f},
+                 {"_jawOpenPre", 0.3f}, {"_jawLeftPre", 0.02f}, {"_mouthSmileLeftPre", 0.45f}})
+            live[name] = {v, true};
+        auto frame = std::make_shared<PreviewImage>();
+        frame->width = frame->height = 240;
+        frame->seq = 1;
+        frame->pixels.resize(240 * 240);
+        for (int y = 0; y < 240; y++)   // A soft gradient with a dark mouth shape.
+            for (int x = 0; x < 240; x++) {
+                const float dx = (x - 120) / 50.f, dy = (y - 140) / 22.f;
+                frame->pixels[size_t(y) * 240 + x] = uint8_t(dx * dx + dy * dy < 1 ? 40 : 90 + x / 3 + y / 4);
+            }
+        auto data = [&](std::map<std::string, LiveSignal> extra, bool preview = false) {
+            PageData d{cfg, live, preview ? frame : nullptr};
+            for (auto &[k, v] : extra)
+                d.signals[k] = v;
+            return d;
+        };
+        std::vector<Choice> fork_choices = choices;
+        fork_choices.push_back({"/pipelines/gaze/smoothing", "Gaze Smoothing",
+                                "On: frameeyeosc's filter, deadzone and hold while shut. Off: Valve's raw gaze.", "",
+                                {0, 1}, 1, true, false, {}, "gaze"});
+        fork_choices.push_back({"/pipelines/eye/blink_hold_ms", "Blink Hold",
+                                "Keeps a blink closed long enough for other players to see it. Your mirror doesn't need it.",
+                                "ms", {0, 50, 100, 150}, 0, false, false, {"Off", "50", "100", "150"}, "eyelids"});
+        fork_choices.push_back({"/sinks/squint/active", "Squint",
+                                "Squint from eyecam's engine on the eye cameras. Needs the squint calibration once.", "",
+                                {0, 1}, 1, true, false, {}, "squint"});
+
+        view.set_page(DashboardView::Page::Settings);
+        view.render(c, release, fork_choices, std::nullopt);
+        save(c, "settings_fork");
+
+        view.set_page(DashboardView::Page::Eyes);
+        view.set_page_data(data({}));
+        view.render(c, tracking, fork_choices, Point{500, 260});   // The pointer is on the left openness range.
+        save(c, "eyes_eyelids");
+        view.click({1060, 76});   // The Gaze tab.
+        view.render(c, tracking, fork_choices, std::nullopt);
+        save(c, "eyes_gaze");
+
+        view.set_page(DashboardView::Page::Squint);
+        using LS = std::map<std::string, LiveSignal>;
+        const std::pair<const char *, LS> squint_states[] = {
+            {"squint_no_engine", {}},
+            {"squint_learning", {{"_SquintCalState", {0, true}}}},
+            {"squint_imported", {{"_SquintCalState", {0, true}}, {"_SquintReady", {1, true}},
+                                 {"_SquintCalibrated", {1, true}}, {"_SquintCalImported", {1, true}}}},
+            {"squint_running", {{"_SquintCalState", {1, true}}, {"_SquintCalStep", {4, true}},
+                                {"_SquintCalSecondsLeft", {3.4f, true}}}},
+            {"squint_fitting", {{"_SquintCalState", {2, true}}}},
+            {"squint_done", {{"_SquintCalState", {3, true}}, {"_SquintReady", {1, true}}, {"_SquintCalibrated", {1, true}},
+                             {"_LeftEyeSquintFsq", {-0.31f, true}}, {"_RightEyeSquintFsq", {-0.27f, true}}}},
+            {"squint_failed", {{"_SquintCalState", {4, true}}, {"_SquintReady", {1, true}}, {"_SquintCalFail", {2, true}}}},
+        };
+        for (const auto &[name, sig] : squint_states) {
+            view.set_page_data(data(sig));
+            view.render(c, tracking, fork_choices, std::nullopt);
+            save(c, name);
+        }
+
+        view.set_page(DashboardView::Page::Mouth);
+        view.set_page_data(data({}, true));
+        view.render(c, tracking, fork_choices, std::nullopt);
+        save(c, "mouth_camera");
+        // Drag the crop box 30 px right and its corner 40 px out, and show the box before the release.
+        view.click({200, 280});
+        view.drag({230, 280});
+        view.render(c, tracking, fork_choices, std::nullopt);
+        save(c, "mouth_camera_dragging");
+        const auto moved = view.release({230, 280});
+        for (const auto &[ptr, v] : moved.changes)
+            printf("drag sends %s = %s\n", ptr.c_str(), v.dump().c_str());
+        view.set_page_data(data({}));
+        view.render(c, tracking, fork_choices, std::nullopt);
+        save(c, "mouth_camera_waiting");
+        view.click({1060, 76});   // The Shapes tab.
+        view.render(c, tracking, fork_choices, std::nullopt);
+        save(c, "mouth_shapes_jaw");
+        view.click({340 + 160 + 80, 288});   // The Mouth group.
+        view.render(c, tracking, fork_choices, std::nullopt);
+        save(c, "mouth_shapes_mouth");
+        view.click({1100, 682});   // Next.
+        view.render(c, tracking, fork_choices, std::nullopt);
+        save(c, "mouth_shapes_mouth_page2");
+        (*cfg)["pipelines"]["face"]["calibration"]["mode"] = "auto";
+        view.click({340 + 4 * 160 + 80, 288});   // The Tongue group.
+        view.set_page_data(data({}));
+        view.render(c, tracking, fork_choices, std::nullopt);
+        save(c, "mouth_shapes_auto");
+    }
 
     // Measure the render cost for each redraw on the dashboard thread.
     {

@@ -34,7 +34,7 @@ TEST_CASE("built-in defaults parse and carry the key settings") {
     CHECK_FALSE((*d)["sources"]["eye"].contains("process_fps"));   // The eye rate is a share of the camera rate.
     CHECK_FALSE((*d)["sources"]["eye"].contains("request_fps"));
     CHECK((*d)["sources"]["eye"]["type"] == "frame_dsp_eye");
-    CHECK((*d)["sources"]["face"]["type"] == "babble_usb");
+    CHECK((*d)["sources"]["face"]["type"] == "face_camera");
 #if BABBLE_FRUNK_MOUTH
     CHECK((*d)["sources"]["mouth"]["process_fps"] == 120);
     CHECK((*d)["sources"]["mouth"]["nodes"]["left"] == "/dev/video9");

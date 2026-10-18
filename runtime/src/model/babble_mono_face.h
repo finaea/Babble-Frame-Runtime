@@ -8,6 +8,8 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <mutex>
+#include <utility>
 #include <vector>
 
 namespace babble {
@@ -34,6 +36,8 @@ class BabbleMonoFace : public PipelineBase {
 public:
     BabbleMonoFace(const nlohmann::json &cfg, PipelineDeps deps) : PipelineBase(cfg, std::move(deps), "infM") {}
     bool init() override;
+    // Changes calibration/mode, calibration/ranges/<shape> or roi while the pipeline runs.
+    bool set_option(const std::string &key, const nlohmann::json &value) override;
 
     // Convert one camera image into the model input, which is public for the tests.
     void prepare(const Frame &f, float *input);
@@ -53,7 +57,10 @@ private:
     std::unique_ptr<ExecuTorchRunner> runner_;
     std::unique_ptr<OneEuro> filter_;
     std::unique_ptr<face::Calibration> calibration_;
+    std::array<std::pair<float, float>, face::kShapes.size()> ranges_;   // The manual ranges, kept for a mode change.
+    std::mutex options_mutex_;   // Lock this to use roi_, the flips, the rotation, calibration_ or ranges_, because set_option() changes them.
     std::array<SignalId, face::kShapes.size()> ids_{};
+    std::array<SignalId, face::kShapes.size()> pre_ids_{};   // "_<shape>Pre" is the value before the calibration.
 
     std::vector<uint8_t> tmp_a_, tmp_b_, small_;
     std::vector<float> input_, out_;

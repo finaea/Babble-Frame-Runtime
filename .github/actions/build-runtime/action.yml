@@ -82,6 +82,13 @@ runs:
         CMAKE_GENERATOR: Ninja
       run: tools/build_executorch.sh "${{ steps.paths.outputs.et-prefix }}"
 
+    # The squint engine (runtime/eyecam_ffi) is a Rust crate that the runtime build compiles with cargo.
+    - name: Install Rust
+      shell: bash
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+        echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
     - name: Configure
       shell: bash
       run: >-

@@ -71,6 +71,11 @@ std::optional<std::array<double, 2>> from_direction(double x, double y, double z
     return std::array<double, 2>{scale(std::atan2(x, z), max_deg, scaling), scale(std::atan2(y, z), max_deg, scaling)};
 }
 
+double width_for(double feo_width, double max_deg, Scaling scaling) {
+    // Near the centre, tan(a) is a in radians.
+    return scaling == Scaling::Tangent ? feo_width * 45 * M_PI / 180 : feo_width * 45 / max_deg;
+}
+
 }
 
 SteamVrGaze::SteamVrGaze(const nlohmann::json &cfg, PipelineDeps deps)
@@ -124,8 +129,14 @@ bool SteamVrGaze::init() {
     off_ = {cfg_.value("roll_offset", 0.0), cfg_.value("yaw_offset", 0.0), cfg_.value("pitch_offset", 0.0)};
 
     const char *names[4] = {"LeftEyeX", "LeftEyeY", "RightEyeX", "RightEyeY"};
-    for (int i = 0; i < 4; i++)
+    for (int i = 0; i < 4; i++) {
         ids_[i] = deps_.state.add_signal(names[i]);
+        pre_ids_[i] = deps_.state.add_signal(std::string("_") + names[i] + "Pre");
+    }
+    lid_ids_ = {deps_.state.add_signal("_LeftEyeLidPre"), deps_.state.add_signal("_RightEyeLidPre")};
+    for (const char *key : {"smoothing", "one_euro", "deadzone", "hold_closed_below", "ranges"})
+        if (cfg_.contains(key) && !set_filter_option(key, cfg_[key]))
+            LOG.warn("pipeline %s: ignoring %s = %s", name_.c_str(), key, cfg_[key].dump().c_str());
     const std::string p = "pipe." + name_ + ".";
     deps_.stats.add(p + "samples_per_s", &samples_);
     deps_.stats.add(p + "invalid", &invalid_);
@@ -137,9 +148,49 @@ bool SteamVrGaze::init() {
     return true;
 }
 
+bool SteamVrGaze::set_filter_option(const std::string &key, const nlohmann::json &value) {
+    std::lock_guard<std::mutex> lock(opt_mutex_);
+    if (key == "smoothing" && value.is_boolean()) {
+        smoothing_ = value.get<bool>();
+        return true;
+    }
+    if (key == "one_euro" && value.is_object()) {
+        filter_params_.euro = *one_euro_params(value, filter_params_.euro);
+        return true;
+    }
+    if (key.starts_with("one_euro/") && value.is_number()) {
+        const std::string field = key.substr(9);
+        if (field != "min_cutoff" && field != "beta" && field != "d_cutoff")
+            return false;
+        filter_params_.euro = *one_euro_params(nlohmann::json{{field, value}}, filter_params_.euro);
+        return true;
+    }
+    if (key == "deadzone" && value.is_number() && value.get<double>() >= 0) {
+        filter_params_.deadzone = value.get<double>();
+        return true;
+    }
+    if (key == "hold_closed_below" && value.is_number() && value.get<double>() >= 0) {
+        filter_params_.hold_closed_below = value.get<double>();
+        return true;
+    }
+    const char *names[4] = {"LeftEyeX", "LeftEyeY", "RightEyeX", "RightEyeY"};
+    if (key == "ranges" && value.is_object()) {
+        bool ok = true;
+        for (const auto &[k, v] : value.items()) {
+            const auto it = std::find_if(names, names + 4, [&](const char *n) { return k == n; });
+            ok = it != names + 4 && ManualRange::parse(v, &ranges_[it - names]) && ok;
+        }
+        return ok;
+    }
+    for (int i = 0; i < 4; i++)
+        if (key == std::string("ranges/") + names[i])
+            return ManualRange::parse(value, &ranges_[i]);
+    return false;
+}
+
 bool SteamVrGaze::set_option(const std::string &key, const nlohmann::json &value) {
     if (key != "gaze_source")
-        return false;
+        return set_filter_option(key, value);
     auto source = parse_gaze_source(value);
     if (!source)
         return false;
@@ -169,6 +220,39 @@ void SteamVrGaze::publish(double lx, double ly, double rx, double ry, uint64_t n
     deps_.state.update(u);
 }
 
+void SteamVrGaze::send(double lx, double ly, double rx, double ry, uint64_t now) {
+    bool smoothing;
+    gaze::FilterParams fp;
+    std::array<ManualRange, 4> ranges;
+    {
+        std::lock_guard<std::mutex> lock(opt_mutex_);
+        smoothing = smoothing_;
+        fp = filter_params_;
+        ranges = ranges_;
+    }
+    std::array<double, 4> v = {lx, ly, rx, ry};
+    if (smoothing) {
+        fp.deadzone = gaze::width_for(fp.deadzone, max_deg_, scaling_);
+        filter_.set_params(fp);
+        // Use the eyelids only while the eye pipeline sends them.
+        std::optional<std::array<double, 2>> lids;
+        Signal s[2];
+        deps_.state.read(lid_ids_, s);
+        if (s[0].confidence > 0 && s[1].confidence > 0 && now - std::min(now, std::min(s[0].t_ns, s[1].t_ns)) < stale_ns_)
+            lids = std::array<double, 2>{s[0].value, s[1].value};
+        v = filter_.apply(v, lids, last_send_ns_ ? double(now - last_send_ns_) / 1e9 : 0.0);
+    } else {
+        filter_.reset();
+    }
+    last_send_ns_ = now;
+    std::pair<SignalId, Signal> u[8];
+    for (int i = 0; i < 4; i++) {
+        u[i] = {pre_ids_[i], {float(v[i]), 1.0f, now}};
+        u[4 + i] = {ids_[i], {ranges[i].apply_signed(float(v[i])), 1.0f, now}};
+    }
+    deps_.state.update(u);
+}
+
 // Get the direction of each eye from the eye-service shared memory.
 bool SteamVrGaze::tick_independent(uint64_t now) {
     auto s = deps_.eye_server->latest(uint64_t(stale_ns_));
@@ -179,7 +263,7 @@ bool SteamVrGaze::tick_independent(uint64_t now) {
     auto gr = gaze::from_direction(r[0], r[1], r[2], max_deg_, flip_y_, off_, scaling_);
     if (!gl || !gr)
         return false;
-    publish((*gl)[0], (*gl)[1], (*gr)[0], (*gr)[1], now);
+    send((*gl)[0], (*gl)[1], (*gr)[0], (*gr)[1], now);
     samples_.tick();
     return true;
 }
@@ -228,7 +312,7 @@ bool SteamVrGaze::tick_combined(uint64_t now) {
     if (!g)
         return false;
     const auto &[lx, rx, y] = *g;
-    publish(lx, y, rx, y, now);
+    send(lx, y, rx, y, now);
     samples_.tick();
     return true;
 }

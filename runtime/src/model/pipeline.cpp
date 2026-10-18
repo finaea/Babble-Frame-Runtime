@@ -11,6 +11,7 @@
 #include "model/fusionnet_mouth.h"
 #endif
 
+#include <algorithm>
 #include <chrono>
 
 namespace {
@@ -116,10 +117,27 @@ void PipelineBase::stop() {
 }
 
 void PipelineBase::run() {
+    // With neutral_after_s set, a source that stops sending (a stream that went away) gets the neutral values once.
+    // This thread also runs process(), so a late frame cannot overwrite them.
+    const uint64_t neutral_after_ns = uint64_t(std::max(0.0, cfg_.value("neutral_after_s", 0.0)) * 1e9);
+    uint64_t last_frame_ns = 0;
+    bool input_lost = false;
     while (!stop_) {
         auto sf = input_->wait_take(std::chrono::milliseconds(200));
-        if (!sf)
+        if (!sf) {
+            if (neutral_after_ns && last_frame_ns && !input_lost && mono_ns() - last_frame_ns > neutral_after_ns) {
+                input_lost = true;
+                LOG.info("pipeline %s: no frames for %.1f s, sending neutral values", name_.c_str(),
+                         neutral_after_ns / 1e9);
+                const auto values = neutral(mono_ns());
+                if (!values.empty())
+                    publish(values);
+                reset_session();
+            }
             continue;
+        }
+        last_frame_ns = mono_ns();
+        input_lost = false;
         for (ISink *tap : deps_.frame_taps)
             tap->offer_frames(source_, *sf);
         process(*sf);

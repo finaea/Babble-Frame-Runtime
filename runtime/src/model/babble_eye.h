@@ -2,11 +2,14 @@
 
 #include "model/executorch_runner.h"
 #include "model/pipeline.h"
+#include "model/postprocess/blink_hold.h"
 #include "model/postprocess/eye_post.h"
+#include "model/postprocess/manual_range.h"
 
 #include <array>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <vector>
 
@@ -68,6 +71,14 @@ private:
     std::array<SignalId, 3> left_ids_{}, right_ids_{};   // The order is Lid, Widen, Dilation.
     SignalId left_raw_id_ = 0, right_raw_id_ = 0;        // These debug signals are not sent.
     std::array<SignalId, 4> cal_ids_{};                  // These debug signals show the neutral and wide values of each eye.
+
+    // The blink hold and the manual ranges come after the calibration.
+    bool set_eye_option(const std::string &key, const nlohmann::json &value);
+    std::array<eye::BlinkHold, 2> blink_hold_;   // Index 0 is view 2 and index 1 is view 3, as for calib_.
+    std::atomic<double> blink_hold_ms_{0};
+    std::mutex range_mutex_;
+    std::array<std::array<ManualRange, 3>, 2> ranges_{};   // These are [Left, Right][Lid, Widen, Dilation].
+    std::array<SignalId, 3> left_pre_ids_{}, right_pre_ids_{};   // These are the values before the manual ranges.
 };
 
 }

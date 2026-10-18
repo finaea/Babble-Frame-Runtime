@@ -2,6 +2,7 @@
 
 #include "babble_version.h"
 #include "camera/tracking_source.h"
+#include "camera/face_camera_source.h"
 #include "camera/usb/babble_usb_source.h"
 #include "capture/app_installer.h"
 #include "update/runtime_updater.h"
@@ -25,6 +26,7 @@
 #include "platform/eye_server_client.h"
 #include "platform/steamvr_client.h"
 #include "platform/steamvr_settings.h"
+#include "sink/frame_preview_sink.h"
 #include "sink/link_sink.h"
 #include "sink/record_sink.h"
 #include "sink/vrc_native_sink.h"
@@ -252,6 +254,7 @@ std::vector<ui::Choice> dashboard_choices(const json &cfg) {
         c.diagnostics = row.value("page", "settings") == "diagnostics";
         c.options = c.boolean ? std::vector<double>{0, 1} : row.value("options", std::vector<double>{});
         c.option_labels = row.value("labels", std::vector<std::string>{});
+        c.page = row.value("page", "");
         c.value = c.boolean ? double(cfg[ptr].get<bool>()) : cfg[ptr].get<double>();
         out.push_back(std::move(c));
     }
@@ -354,7 +357,8 @@ int main(int argc, char **argv) {
             continue;
         }
         auto sink = make_sink(it.value(),
-                              SinkDeps{it.key(), threads, state, stats, BABBLE_VERSION_DISPLAY, BABBLE_PROFILE_NAME});
+                              SinkDeps{it.key(), threads, state, stats, BABBLE_VERSION_DISPLAY, BABBLE_PROFILE_NAME,
+                                       &eye_server});
         if (!sink)
             continue;
         if (sink->wants_frames())
@@ -551,10 +555,16 @@ int main(int argc, char **argv) {
 #endif
 
     // The runtime reads the USB camera list at start and when the overlay asks for a refresh.
-    BabbleUsbSource *usb_source = nullptr;
-    for (auto &s : sources)
-        if (!usb_source)
-            usb_source = dynamic_cast<BabbleUsbSource *>(s.src.get());
+    // The face_camera source can change to its URL mode, so look the USB source up each time.
+    auto usb_source = [&]() -> BabbleUsbSource * {
+        for (auto &s : sources) {
+            if (auto *u = dynamic_cast<BabbleUsbSource *>(s.src.get()))
+                return u;
+            if (auto *f = dynamic_cast<FaceCameraSource *>(s.src.get()); f && f->usb())
+                return f->usb();
+        }
+        return nullptr;
+    };
     std::vector<ui::UsbCamera> usb_cameras;
     auto refresh_usb_cameras = [&] {
         usb_cameras.clear();
@@ -582,6 +592,10 @@ int main(int argc, char **argv) {
             o.width_m = dcfg.value("width_m", o.width_m);
             o.state = &state;
             o.mouth_tracking_id = mouth_tracking_id;
+            for (auto &k : sinks)   // The Mouth page shows the frames of the preview sink.
+                if (auto *p = dynamic_cast<FramePreviewSink *>(k.sink.get()))
+                    o.preview = p;
+            dashboard->set_config(cfg);
             dashboard->start(steamvr, thread_spec(threads, "ui", "bbl-ui"), o, dashboard_choices(cfg));
         } else {
             dashboard->stop();
@@ -672,6 +686,8 @@ int main(int argc, char **argv) {
         }
         if (dashboard->started() && (value.is_number() || value.is_boolean()))
             dashboard->set_choice(id, value.is_boolean() ? double(value.get<bool>()) : value.get<double>());
+        if (dashboard->started())
+            dashboard->set_config(cfg);
         if (origin != Origin::SteamVr)
             steamvr_settings.push(id, value);
     };
@@ -751,7 +767,7 @@ int main(int argc, char **argv) {
         }
         for (const auto &c : usb_cameras)
             o << "usb camera: " << c.label << " (" << c.id << ")"
-              << (usb_source && usb_source->active_camera() == c.id ? " streaming" : "") << "\n";
+              << (usb_source() && usb_source()->active_camera() == c.id ? " streaming" : "") << "\n";
         o << "\n== signals (value, age)\n";
         const auto snap = state.snapshot();
         const uint64_t now_ns = mono_ns();
@@ -1190,9 +1206,9 @@ int main(int argc, char **argv) {
             st.log_file = log::file_path().string();
             st.stats_file = stats_file.path().string();
             st.cameras = usb_cameras;
-            if (usb_source) {
-                st.camera = usb_source->camera();
-                st.active_camera = usb_source->active_camera();
+            if (auto *usb = usb_source()) {
+                st.camera = usb->camera();
+                st.active_camera = usb->active_camera();
             }
             for (auto &s : sources) {
                 // Show the eye rate that the share of the camera rate gives.

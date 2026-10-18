@@ -52,9 +52,22 @@ void Dashboard::stop() {
     pointer_.reset();
     hover_ = -1;
     view_.set_page(DashboardView::Page::Home);
+    if (options_.preview)
+        options_.preview->set_open(false);
 }
 
 void Dashboard::release_gpu() { gpu_.release(); }
+
+void Dashboard::show_keyboard(const std::string &text) {
+    vr::EVROverlayError err = vr::VROverlayError_None;
+    vr_->with_vr([&] {
+        err = vr::VROverlay()->ShowKeyboardForOverlay(main_, vr::k_EGamepadTextInputModeNormal,
+                                                      vr::k_EGamepadTextInputLineModeSingleLine, vr::KeyboardFlag_Modal,
+                                                      "Stream URL", 500, text.c_str(), 0);
+    });
+    if (err != vr::VROverlayError_None)
+        LOG.warn("dashboard: opening the keyboard failed (%d)", int(err));
+}
 
 void Dashboard::set_status(const Status &s) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -87,6 +100,13 @@ void Dashboard::set_choice(const std::string &id, double value) {
             c.value = value;
             dirty_ = true;
         }
+}
+
+void Dashboard::set_config(const nlohmann::json &cfg) {
+    auto copy = std::make_shared<const nlohmann::json>(cfg);
+    std::lock_guard<std::mutex> lock(mutex_);
+    config_ = std::move(copy);
+    dirty_ = true;
 }
 
 std::vector<std::pair<std::string, nlohmann::json>> Dashboard::take_changes() {
@@ -184,6 +204,24 @@ std::array<EyeReading, 2> Dashboard::read_eyes() const {
     return out;
 }
 
+PageData Dashboard::read_page_data() {
+    PageData d;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        d.config = config_;
+    }
+    if (options_.state) {
+        const auto snap = options_.state->snapshot();
+        const uint64_t now = mono_ns();
+        for (size_t i = 0; i < snap.names.size() && i < snap.signals.size(); i++)
+            if (snap.signals[i].t_ns != 0)
+                d.signals[snap.names[i]] = {snap.signals[i].value, now - snap.signals[i].t_ns < 1000000000ull};
+    }
+    if (options_.preview && view_.page() == DashboardView::Page::Mouth)
+        d.preview = options_.preview->latest();
+    return d;
+}
+
 void Dashboard::present() {
     Status status;
     std::vector<Choice> choices;
@@ -194,6 +232,8 @@ void Dashboard::present() {
         dirty_ = false;
     }
     status.eyes = drawn_eyes_ = read_eyes();
+    if (view_.live_page())
+        view_.set_page_data(read_page_data());
     last_present_ns_ = mono_ns();
     view_.render(canvas_, status, choices, pointer_);
 
@@ -236,7 +276,8 @@ void Dashboard::run() {
         }
 
         bool redraw = false;
-        std::vector<Point> clicks;
+        std::vector<Point> clicks, releases;
+        std::optional<std::string> typed;   // The text from the SteamVR keyboard.
         vr_->with_vr([&] {
             vr::VREvent_t ev;
             while (vr::VROverlay()->PollNextOverlayEvent(main_, &ev, sizeof(ev))) {
@@ -249,7 +290,19 @@ void Dashboard::run() {
                     if (ev.data.mouse.button == vr::VRMouseButton_Left)
                         clicks.push_back({ev.data.mouse.x, DashboardView::kHeight - ev.data.mouse.y});
                     break;
+                case vr::VREvent_MouseButtonUp:
+                    if (ev.data.mouse.button == vr::VRMouseButton_Left)
+                        releases.push_back({ev.data.mouse.x, DashboardView::kHeight - ev.data.mouse.y});
+                    break;
+                case vr::VREvent_KeyboardDone: {
+                    char text[512] = {};
+                    vr::VROverlay()->GetKeyboardText(text, sizeof(text));
+                    typed = text;
+                    break;
+                }
                 case vr::VREvent_FocusLeave:
+                    if (pointer_ && view_.dragging())
+                        releases.push_back(*pointer_);   // End a drag where the laser left the tab.
                     pointer_.reset();
                     break;
                 case vr::VREvent_OverlayShown:
@@ -285,7 +338,10 @@ void Dashboard::run() {
                 capture_request_ = int(r.capture);
             if (r.update)
                 update_request_ = true;
+            if (r.keyboard)
+                show_keyboard(*r.keyboard);
             std::lock_guard<std::mutex> lock(mutex_);
+            changes_.insert(changes_.end(), r.changes.begin(), r.changes.end());
             // Show string settings immediately, and let the main thread apply them.
             if (r.mouth_source && *r.mouth_source != status_.mouth_source) {
                 status_.mouth_source = *r.mouth_source;
@@ -313,6 +369,23 @@ void Dashboard::run() {
             }
         }
 
+        // A drag on the Eyes or Mouth page follows the pointer and sends its value on release.
+        if (view_.dragging() && pointer_ && releases.empty())
+            redraw |= view_.drag(*pointer_);
+        for (const Point &p : releases) {
+            auto r = view_.release(p);
+            redraw |= r.redraw;
+            std::lock_guard<std::mutex> lock(mutex_);
+            changes_.insert(changes_.end(), r.changes.begin(), r.changes.end());
+        }
+        if (typed) {
+            std::lock_guard<std::mutex> lock(mutex_);
+            changes_.emplace_back("/sources/face/url", *typed);
+            redraw = true;
+        }
+        if (options_.preview)
+            options_.preview->set_open(visible_ && view_.page() == DashboardView::Page::Mouth);
+
         // Draw again only when something visible changed.
         if (visible_) {
             const int hover = view_.hit_at(pointer_);
@@ -334,6 +407,8 @@ void Dashboard::run() {
                               a.dilation_ok != b.dilation_ok || std::fabs(a.dilation - b.dilation) > 0.005;
                 }
             }
+            // The Eyes, Squint and Mouth pages show live values and the preview at about 15 frames a second.
+            redraw |= view_.live_page() && mono_ns() - last_present_ns_ >= 66000000ull;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 redraw |= dirty_;

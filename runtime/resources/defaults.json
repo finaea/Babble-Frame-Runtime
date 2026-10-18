@@ -68,6 +68,10 @@
     "net": {
       "cpus": [0],
       "nice": 10
+    },
+    "squint": {
+      "cpus": [4],
+      "nice": 5
     }
   },
   "sources": {
@@ -109,8 +113,10 @@
       "pause_when_absent": true
     },
     "face": {
-      "type": "babble_usb",
+      "type": "face_camera",
       "enabled": true,
+      "mode": "usb",
+      "url": "",
       "camera": "",
       "vendor": "303a",
       "product": "8000",
@@ -161,7 +167,13 @@
       "pupil_base_s": 60,
       "one_euro": { "min_cutoff": 1.0, "beta": 5.0, "d_cutoff": 3.0 },
       "pupil_one_euro": { "min_cutoff": 0.5, "beta": 0.01, "d_cutoff": 1.0 },
-      "babble_swap": false
+      "babble_swap": false,
+      "blink_hold_ms": 0,
+      "ranges": {
+        "LeftEyeLid": [0, 1], "RightEyeLid": [0, 1],
+        "LeftEyeWiden": [0, 1], "RightEyeWiden": [0, 1],
+        "LeftEyeDilation": [0, 1], "RightEyeDilation": [0, 1]
+      }
     },
     "gaze": {
       "type": "steamvr_gaze",
@@ -177,7 +189,15 @@
       "yaw_offset": 0,
       "pitch_offset": 0,
       "roll_offset": 0,
-      "stale_s": 0.5
+      "stale_s": 0.5,
+      "smoothing": true,
+      "one_euro": { "min_cutoff": 0.3, "beta": 1.5, "d_cutoff": 0.5 },
+      "deadzone": 0.005,
+      "hold_closed_below": 0.5,
+      "ranges": {
+        "LeftEyeX": [-1, 1], "LeftEyeY": [-1, 1],
+        "RightEyeX": [-1, 1], "RightEyeY": [-1, 1]
+      }
     },
     "face": {
       "type": "babble_mono_face",
@@ -190,7 +210,8 @@
       "rotate": 0,
       "flip": "none",
       "one_euro": { "min_cutoff": 0.5, "beta": 3.0, "d_cutoff": 1.0 },
-      "calibration": { "mode": "auto" }
+      "calibration": { "mode": "manual", "ranges": {} },
+      "neutral_after_s": 1.0
     }
   },
   "sinks": {
@@ -256,6 +277,21 @@
       "port": 9000,
       "steam_link_log": "",
       "max_rate_hz": 0
+    },
+    "squint": {
+      "type": "eyecam_squint",
+      "enabled": true,
+      "thread": "squint",
+      "active": true,
+      "max_hz": 45,
+      "calib_file": "eyecam_calib.json",
+      "import_from": "~/.config/eyecam/calib.json",
+      "ranges": { "LeftEyeSquint": [0, 1], "RightEyeSquint": [0, 1] }
+    },
+    "preview": {
+      "type": "frame_preview",
+      "enabled": true,
+      "max_hz": 15
     }
   },
   "arbiter": {
@@ -283,7 +319,7 @@
   },
   "update": {
     "enabled": true,
-    "repo": "Project-Babble/Babble-Frame-Runtime",
+    "repo": "finaea/Babble-Frame-Runtime",
     "api_url": "https://api.github.com/repos/{repo}/releases?per_page=30",
     "prereleases": "auto",
     "check_hours": 6
@@ -338,6 +374,27 @@
         "hint": "A share of the eye camera rate. Lower rates save battery.",
         "options": [1, 2, 3],
         "labels": ["1:1", "1:2", "1:3"]
+      },
+      {
+        "id": "/pipelines/gaze/smoothing",
+        "page": "gaze",
+        "label": "Gaze Smoothing",
+        "hint": "On: frameeyeosc's filter, deadzone and hold while shut. Off: Valve's raw gaze."
+      },
+      {
+        "id": "/pipelines/eye/blink_hold_ms",
+        "page": "eyelids",
+        "label": "Blink Hold",
+        "hint": "Keeps a blink closed long enough for other players to see it. Your mirror doesn't need it.",
+        "unit": "ms",
+        "options": [0, 50, 100, 150],
+        "labels": ["Off", "50", "100", "150"]
+      },
+      {
+        "id": "/sinks/squint/active",
+        "page": "squint",
+        "label": "Squint",
+        "hint": "Squint from eyecam's engine on the eye cameras. Needs the squint calibration once."
       },
       {
         "id": "/sinks/camera_stream/active",

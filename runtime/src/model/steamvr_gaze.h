@@ -3,9 +3,12 @@
 #include "core/metrics.h"
 #include "core/threading.h"
 #include "model/pipeline.h"
+#include "model/postprocess/gaze_filter.h"
+#include "model/postprocess/manual_range.h"
 
 #include <array>
 #include <atomic>
+#include <mutex>
 #include <optional>
 #include <thread>
 
@@ -27,6 +30,9 @@ std::optional<std::array<double, 3>> convert(double x, double y, double z, doubl
 // Convert the head-space gaze direction of one eye to the yaw and pitch of that eye.
 std::optional<std::array<double, 2>> from_direction(double x, double y, double z, double max_deg, bool flip_y,
                                                     const Offsets &off, Scaling scaling = Scaling::Angle);
+
+// Convert a frameeyeosc gaze width, which is in units of 45 degrees, to the units that the pipeline sends.
+double width_for(double feo_width, double max_deg, Scaling scaling);
 
 }
 
@@ -61,6 +67,19 @@ private:
     bool tick_independent(uint64_t now);
     bool tick_combined(uint64_t now);
     void publish(double lx, double ly, double rx, double ry, uint64_t now);
+    // Smooth a valid sample, apply the manual ranges and publish it.
+    void send(double lx, double ly, double rx, double ry, uint64_t now);
+    bool set_filter_option(const std::string &key, const nlohmann::json &value);
+
+    // The options are set on the main thread and read on the pipeline thread under opt_mutex_.
+    std::mutex opt_mutex_;
+    bool smoothing_ = true;
+    gaze::FilterParams filter_params_;   // The deadzone is in frameeyeosc's units of 45 degrees.
+    std::array<ManualRange, 4> ranges_{{{-1, 1}, {-1, 1}, {-1, 1}, {-1, 1}}};
+    gaze::Filter filter_;   // This is used only on the pipeline thread.
+    uint64_t last_send_ns_ = 0;
+    std::array<SignalId, 4> pre_ids_{};   // These are the values before the manual ranges, for the Babble tab.
+    std::array<SignalId, 2> lid_ids_{};   // These are the lids before the manual ranges, for the hold while shut.
 
     std::optional<double> ipd_override_;
     uint64_t setup_connection_ = 0;

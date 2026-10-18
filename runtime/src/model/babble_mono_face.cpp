@@ -4,6 +4,7 @@
 #include "core/log.h"
 #include "model/half.h"
 #include "model/image_ops.h"
+#include "model/postprocess/manual_range.h"
 
 #include <algorithm>
 #include <cmath>
@@ -17,7 +18,7 @@ namespace babble {
 namespace {
 
 constexpr uint32_t kSize = 224;
-constexpr size_t kMaxSide = 1024;   // This is the largest image side, in pixels, that prepare() uses.
+constexpr size_t kMaxSide = 1280;   // This is the largest image side, in pixels, that prepare() uses (stream URL frames go up to 1280x960).
 
 bool is_float(DType t) { return t == DType::F32 || t == DType::F16; }
 
@@ -64,14 +65,19 @@ bool BabbleMonoFace::init() {
     }
     calibration_ = std::make_unique<face::Calibration>(face::kShapes.size(), mode);
     const auto ranges = cal.value("ranges", nlohmann::json::object());
+    ranges_.fill({0.0f, 1.0f});
     for (size_t i = 0; i < face::kShapes.size(); i++) {
         const auto r = ranges.find(face::kShapes[i]);
-        if (r != ranges.end() && r->is_array() && r->size() == 2)
-            calibration_->set_range(i, (*r)[0].get<float>(), (*r)[1].get<float>());
+        if (r != ranges.end() && r->is_array() && r->size() == 2) {
+            ranges_[i] = {(*r)[0].get<float>(), (*r)[1].get<float>()};
+            calibration_->set_range(i, ranges_[i].first, ranges_[i].second);
+        }
     }
 
-    for (size_t i = 0; i < face::kShapes.size(); i++)
+    for (size_t i = 0; i < face::kShapes.size(); i++) {
         ids_[i] = deps_.state.add_signal(face::kShapes[i]);
+        pre_ids_[i] = deps_.state.add_signal(std::string("_") + face::kShapes[i] + "Pre");
+    }
 
     tmp_a_.resize(kMaxSide * kMaxSide);
     tmp_b_.resize(kMaxSide * kMaxSide);
@@ -86,6 +92,71 @@ bool BabbleMonoFace::init() {
                     : "full",
              rot, flip.c_str(), gain_, cal.value("mode", "auto").c_str());
     return true;
+}
+
+bool BabbleMonoFace::set_option(const std::string &key, const nlohmann::json &value) {
+    std::lock_guard lock(options_mutex_);
+    if (!calibration_)
+        return false;
+    if (key == "calibration/mode") {
+        face::CalibMode mode = face::CalibMode::Auto;
+        if (!value.is_string() || !face::parse_mode(value.get<std::string>(), &mode))
+            return false;
+        if (mode != calibration_->mode()) {
+            calibration_ = std::make_unique<face::Calibration>(face::kShapes.size(), mode);
+            for (size_t i = 0; i < ranges_.size(); i++)
+                calibration_->set_range(i, ranges_[i].first, ranges_[i].second);
+            LOG.info("pipeline %s: calibration %s", name_.c_str(), value.get<std::string>().c_str());
+        }
+        return true;
+    }
+    if (key.starts_with("calibration/ranges/")) {
+        const std::string shape = key.substr(19);
+        const auto it = std::find_if(face::kShapes.begin(), face::kShapes.end(),
+                                     [&](const char *s) { return shape == s; });
+        ManualRange r;
+        if (it == face::kShapes.end() || !ManualRange::parse(value, &r))
+            return false;
+        const size_t i = size_t(it - face::kShapes.begin());
+        ranges_[i] = {r.min, r.max};
+        calibration_->set_range(i, r.min, r.max);
+        return true;
+    }
+    if (key == "roi") {
+        // An empty array selects the full image, and four numbers are x, y, width and height.
+        if (!value.is_array() || (!value.empty() && value.size() != 4))
+            return false;
+        for (const auto &v : value)
+            if (!v.is_number() || v.get<double>() < 0)
+                return false;
+        auto at = [&](size_t i) { return uint32_t(std::lround(value[i].get<double>())); };
+        roi_ = value.empty() ? Roi{} : Roi{at(0), at(1), at(2), at(3)};
+        LOG.info("pipeline %s: roi %s", name_.c_str(), value.dump().c_str());
+        return true;
+    }
+    if (key == "rotate") {
+        // The Babble tab sends numbers as doubles, so accept a double that is a whole number.
+        if (!value.is_number())
+            return false;
+        const double rot = value.get<double>();
+        if (rot != 0 && rot != 90 && rot != 180 && rot != 270)
+            return false;
+        quarter_turns_ = int(rot) / 90;
+        LOG.info("pipeline %s: rotate %d", name_.c_str(), int(rot));
+        return true;
+    }
+    if (key == "flip") {
+        if (!value.is_string())
+            return false;
+        const std::string flip = value.get<std::string>();
+        if (flip != "none" && flip != "h" && flip != "v" && flip != "hv" && flip != "vh")
+            return false;
+        flip_h_ = flip.find('h') != std::string::npos;
+        flip_v_ = flip.find('v') != std::string::npos;
+        LOG.info("pipeline %s: flip %s", name_.c_str(), flip.c_str());
+        return true;
+    }
+    return false;
 }
 
 void BabbleMonoFace::prepare(const Frame &f, float *input) {
@@ -142,11 +213,15 @@ void BabbleMonoFace::process(const StereoFrame &sf) {
     if (reset_pending_.exchange(false)) {
         if (filter_)
             filter_->reset();
+        std::lock_guard lock(options_mutex_);
         calibration_->reset();
         last_capture_ns_ = 0;
     }
     const uint64_t t0 = mono_ns();
-    prepare(*sf.left, input_.data());
+    {
+        std::lock_guard lock(options_mutex_);
+        prepare(*sf.left, input_.data());
+    }
     const uint64_t t1 = mono_ns();
 
     const TensorSpec &is = runner_->inputs()[0], &os = runner_->outputs()[0];
@@ -176,10 +251,15 @@ void BabbleMonoFace::process(const StereoFrame &sf) {
         filter_->apply(values_, dt);
     }
     last_capture_ns_ = sf.capture_ns;
-    calibration_->apply(values_);
 
     std::vector<std::pair<SignalId, Signal>> updates;
-    updates.reserve(ids_.size());
+    updates.reserve(ids_.size() * 2);
+    for (size_t i = 0; i < pre_ids_.size(); i++)
+        updates.emplace_back(pre_ids_[i], Signal{values_[i], 1.0f, sf.capture_ns});
+    {
+        std::lock_guard lock(options_mutex_);
+        calibration_->apply(values_);
+    }
     for (size_t i = 0; i < ids_.size(); i++)
         updates.emplace_back(ids_[i], Signal{values_[i], 1.0f, sf.capture_ns});
     publish(updates);

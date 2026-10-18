@@ -10,6 +10,7 @@
 namespace babble {
 
 class ExpressionState;
+class EyeServerClient;
 class StatsRegistry;
 
 // An output module that reads ExpressionState on its own thread, so a slow output cannot stop the tracking.
@@ -32,9 +33,10 @@ public:
 struct SinkDeps {
     std::string name;                  // The config key, which is also the stats prefix.
     const nlohmann::json &threads;
-    const ExpressionState &state;
+    ExpressionState &state;
     StatsRegistry &stats;
     std::string version = "", profile = "";   // The runtime version and profile for the session manifests.
+    EyeServerClient *eye_server = nullptr;
 };
 
 // Makes the module that cfg["type"] names, or returns null for an unknown type.

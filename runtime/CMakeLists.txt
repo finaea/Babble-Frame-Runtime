@@ -37,6 +37,8 @@ add_library(babble_core STATIC
     src/camera/eye/dsp_client.cpp
     src/camera/eye/dsp_eye_source.cpp
     src/camera/tracking_source.cpp
+    src/camera/face_camera_source.cpp
+    src/camera/url/mjpeg_url_source.cpp
     src/camera/usb/babble_usb_source.cpp
     src/camera/usb/jpeg.cpp
     src/camera/usb/usb_device.cpp
@@ -59,6 +61,8 @@ add_library(babble_core STATIC
     src/model/postprocess/one_euro.cpp
     src/model/steamvr_gaze.cpp
     src/model/postprocess/eye_post.cpp
+    src/model/postprocess/gaze_filter.cpp
+    src/model/postprocess/blink_hold.cpp
     src/state/expression_state.cpp
     src/sink/debug_sink.cpp
     src/sink/sink.cpp
@@ -69,6 +73,8 @@ add_library(babble_core STATIC
     src/sink/vrc_native_sink.cpp
     src/sink/camera_stream_sink.cpp
     src/sink/record_sink.cpp
+    src/sink/eyecam_squint_sink.cpp
+    src/sink/frame_preview_sink.cpp
     src/core/sha256.cpp
     src/platform/process.cpp
     src/platform/curl.cpp
@@ -87,6 +93,10 @@ add_library(babble_core STATIC
     src/ui/dashboard_view.cpp
     src/ui/dashboard.cpp
     src/ui/vk_uploader.cpp
+    src/ui/widgets.cpp
+    src/ui/page_eyes.cpp
+    src/ui/page_squint.cpp
+    src/ui/page_mouth.cpp
 )
 if(BABBLE_FRUNK_MOUTH)
     # Add the code for the stereo mouth cameras of the Frame, which only dev builds use.
@@ -116,6 +126,22 @@ target_link_libraries(babble_core PUBLIC pthread ${CMAKE_DL_LIBS}
     xnnpack_backend executorch_selected_kernels portable_kernels
     ${THIRD_PARTY}/openvr/lib/linuxarm64/libopenvr_api.so
     vulkan)
+
+# eyecam's squint engine is a Rust crate (eyecam_ffi over third_party/eyecam) that cargo builds into the build folder.
+find_program(CARGO cargo HINTS $ENV{CARGO_HOME}/bin $ENV{HOME}/.cargo/bin REQUIRED)
+set(EYECAM_FFI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/eyecam_ffi)
+set(EYECAM_FFI_TARGET_DIR ${CMAKE_CURRENT_BINARY_DIR}/cargo)
+set(EYECAM_FFI_LIB ${EYECAM_FFI_TARGET_DIR}/release/libeyecam_ffi.a)
+file(GLOB_RECURSE EYECAM_FFI_SOURCES CONFIGURE_DEPENDS ${EYECAM_FFI_DIR}/src/*.rs ${THIRD_PARTY}/eyecam/src/*.rs)
+add_custom_command(OUTPUT ${EYECAM_FFI_LIB}
+    COMMAND ${CMAKE_COMMAND} -E env CARGO_TARGET_DIR=${EYECAM_FFI_TARGET_DIR}
+            ${CARGO} build --release --locked --manifest-path ${EYECAM_FFI_DIR}/Cargo.toml
+    DEPENDS ${EYECAM_FFI_SOURCES} ${EYECAM_FFI_DIR}/Cargo.toml ${EYECAM_FFI_DIR}/Cargo.lock
+            ${THIRD_PARTY}/eyecam/Cargo.toml
+    COMMENT "Building eyecam_ffi with cargo" USES_TERMINAL VERBATIM)
+add_custom_target(eyecam_ffi DEPENDS ${EYECAM_FFI_LIB})
+add_dependencies(babble_core eyecam_ffi)
+target_link_libraries(babble_core PUBLIC ${EYECAM_FFI_LIB} pthread ${CMAKE_DL_LIBS} m)   # These are what Rust's std needs.
 
 if(BABBLE_ASAN)
     target_compile_options(babble_core PUBLIC -fsanitize=address -fno-omit-frame-pointer)
@@ -150,6 +176,11 @@ add_executable(eye_replay tools/eye_replay.cpp)
 target_link_libraries(eye_replay PRIVATE babble_core)
 set_target_properties(eye_replay PROPERTIES BUILD_RPATH "${THIRD_PARTY}/openvr/lib/linuxarm64")
 
+# This tool replays a BFR eye dump through the eyecam_squint sink's engine path.
+add_executable(squint_replay tools/squint_replay.cpp)
+target_link_libraries(squint_replay PRIVATE babble_core)
+set_target_properties(squint_replay PROPERTIES BUILD_RPATH "${THIRD_PARTY}/openvr/lib/linuxarm64")
+
 # This tool packages a recorded dataset session by hand.
 add_executable(dataset_package tools/dataset_package.cpp)
 target_link_libraries(dataset_package PRIVATE babble_core)
@@ -169,11 +200,14 @@ if(BABBLE_TESTS)
         tests/test_dsp_layout.cpp
         tests/test_config.cpp
         tests/test_tracking_source.cpp
+        tests/test_mjpeg_url_source.cpp
         tests/test_sinks.cpp
         tests/test_image_ops.cpp
         tests/test_executorch_runner.cpp
         tests/test_postprocess.cpp
         tests/test_gaze.cpp
+        tests/test_gaze_filter.cpp
+        tests/test_blink_hold.cpp
         tests/test_dashboard.cpp
         tests/test_eye_server.cpp
         tests/test_packager.cpp

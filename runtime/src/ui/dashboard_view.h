@@ -3,6 +3,7 @@
 #include "platform/steamvr_client.h"
 #include "ui/canvas.h"
 #include "ui/font.h"
+#include "ui/fork_pages.h"
 #include "ui/image.h"
 
 #include <array>
@@ -117,6 +118,7 @@ struct Choice {
     bool boolean = false;
     bool diagnostics = false;
     std::vector<std::string> option_labels{};   // If set, one label for each option replaces the value and unit.
+    std::string page{};   // The page of the row: "" or "settings", "diagnostics", "eyelids", "gaze" or "squint".
 };
 
 struct Point {
@@ -127,7 +129,7 @@ struct Point {
 class DashboardView {
 public:
     static constexpr int kWidth = 1200, kHeight = 750, kThumb = 128;
-    enum class Page { Home, Settings, Cameras, Diagnostics };
+    enum class Page { Home, Settings, Cameras, Diagnostics, Eyes, Squint, Mouth };
 
     bool load_fonts(const std::filesystem::path &dir);   // Loads NotoSans-Regular.ttf and NotoSans-Medium.ttf.
     bool load_icons(const std::filesystem::path &dir);   // Loads the optional logo PNG files.
@@ -152,6 +154,9 @@ public:
         enum class CaptureAction { None, Primary, Remove } capture = CaptureAction::None;
         // True if the user clicked the update pill, and the update state sets what the click does.
         bool update = false;
+        // Settings from the Eyes, Squint and Mouth pages, as pairs of JSON pointer and new value.
+        std::vector<std::pair<std::string, nlohmann::json>> changes;
+        std::optional<std::string> keyboard;   // Open the SteamVR keyboard for the stream URL with this text.
     };
     // Finds the element at p in the last render.
     ClickResult click(Point p);
@@ -166,16 +171,26 @@ public:
     Page page() const { return page_; }
     void set_page(Page p) { page_ = p; }
 
+    // The Eyes, Squint and Mouth pages draw live data, which the caller sets before each render.
+    bool live_page() const { return page_ >= Page::Eyes; }
+    void set_page_data(PageData d) { fork_.data = std::move(d); }
+    // A drag that started with a click on a range handle or the crop box follows the pointer until release.
+    bool dragging() const { return fork_.drag.kind != DragState::Kind::None; }
+    bool drag(Point p);   // Returns true if the drawing changed.
+    ClickResult release(Point p);
+
 private:
     struct Hit {
         enum Kind {
             Cog, Back, Option, Toggle, Visualizer, Restart, MouthSource, OpenCameras, Camera, Refresh,
-            OpenDiagnostics, Verbose, WriteDiagnostics, CapturePrimary, CaptureRemove, Update
+            OpenDiagnostics, Verbose, WriteDiagnostics, CapturePrimary, CaptureRemove, Update,
+            Fork   // An element of the Eyes, Squint or Mouth page, which text names.
         } kind;
         Rect rect;
         size_t choice = 0;   // The choice index for Option, or the feed index for Toggle.
         double value = 0;    // The value for Option, or 1 to turn on for Toggle.
         std::string text{};  // The value for MouthSource, or the camera id for Camera.
+        nlohmann::json json{};   // The setting value for a Fork element.
     };
     void render_home(Canvas &c, const Status &s);
     void render_settings(Canvas &c, const std::vector<Choice> &choices, const Status &s);
@@ -200,6 +215,32 @@ private:
     void render_icon(Canvas &c, Icon icon, float x, float y, Color color);
     float render_block(Canvas &c, float y, Icon icon, float row_h = 124);   // Returns the left edge of the text.
     bool hovered(const Rect &r) const;
+
+    // The pages that the fork adds, in ui/page_*.cpp, and their widgets, in ui/widgets.cpp.
+    void render_eyes(Canvas &c, const std::vector<Choice> &choices);
+    void render_squint(Canvas &c, const std::vector<Choice> &choices);
+    void render_mouth(Canvas &c);
+    void render_page_buttons(Canvas &c, float right);   // The Eyes, Squint and Mouth buttons on Settings.
+    void render_range(Canvas &c, Rect r, const std::string &pointer, const std::string &signal, bool signed_axis,
+                      bool dim = false);
+    void render_text_field(Canvas &c, Rect r, const std::string &action, const std::string &text,
+                           const std::string &placeholder);
+    void render_choice_row(Canvas &c, float y, float row_h, size_t index, const Choice &ch);
+    // Draws segments that set the string or number at pointer to one of the values.
+    float render_value_segments(Canvas &c, float right, float y, const std::string &pointer,
+                                const std::vector<std::string> &labels, const std::vector<nlohmann::json> &values,
+                                float seg_w = 160);   // Returns the left edge.
+    void render_tabs(Canvas &c, float right, const std::vector<std::string> &labels, int selected,
+                     const std::string &action);
+    Rect render_small_button(Canvas &c, float right, float y, const std::string &text, const std::string &action,
+                             bool primary = false);
+    // Returns the current value at pointer: a value that this view just sent, or else the config value.
+    nlohmann::json setting(const std::string &pointer, const nlohmann::json &fallback) const;
+    // Returns a recent value of the signal, or with any_age the last value, which suits status signals.
+    std::optional<float> signal(const std::string &name, bool any_age = false) const;
+    void send(ClickResult &out, const std::string &pointer, nlohmann::json value);
+    void click_fork(const Hit &h, ClickResult &out, Point p);
+
     // Returns the text with an ellipsis so that it fits in max_w.
     std::string fit(const Font &f, const std::string &text, float px, float max_w) const;
 
@@ -211,6 +252,7 @@ private:
     std::array<std::optional<Image>, size_t(Icon::Count)> icons_{};
     std::vector<Hit> hits_;
     std::optional<Point> pointer_;
+    ForkPages fork_;
 };
 
 }
