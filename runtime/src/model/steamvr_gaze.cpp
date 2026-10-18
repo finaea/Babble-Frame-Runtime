@@ -134,7 +134,8 @@ bool SteamVrGaze::init() {
         pre_ids_[i] = deps_.state.add_signal(std::string("_") + names[i] + "Pre");
     }
     lid_ids_ = {deps_.state.add_signal("_LeftEyeLidPre"), deps_.state.add_signal("_RightEyeLidPre")};
-    for (const char *key : {"smoothing", "one_euro", "deadzone", "hold_closed_below", "ranges"})
+    // The strength sets the filter first, so one_euro or deadzone in a user config can still fine-tune it.
+    for (const char *key : {"smoothing", "smoothing_strength", "one_euro", "deadzone", "hold_closed_below", "ranges"})
         if (cfg_.contains(key) && !set_filter_option(key, cfg_[key]))
             LOG.warn("pipeline %s: ignoring %s = %s", name_.c_str(), key, cfg_[key].dump().c_str());
     const std::string p = "pipe." + name_ + ".";
@@ -152,6 +153,25 @@ bool SteamVrGaze::set_filter_option(const std::string &key, const nlohmann::json
     std::lock_guard<std::mutex> lock(opt_mutex_);
     if (key == "smoothing" && value.is_boolean()) {
         smoothing_ = value.get<bool>();
+        return true;
+    }
+    if (key == "smoothing_strength" && value.is_number()) {
+        // 0 is Valve's raw gaze. 1-3 set the One Euro filter and the deadzone together, and Medium is frameeyeosc's
+        // defaults (config.rs): a lower min_cutoff and beta are steadier but follow the eyes later.
+        static constexpr struct {
+            double min_cutoff, beta, deadzone;
+        } kLevels[] = {{1.0, 3.0, 0.0025}, {0.3, 1.5, 0.005}, {0.15, 1.0, 0.01}};
+        const double v = value.get<double>();
+        const int level = int(v);
+        if (v != level || level < 0 || level > 3)
+            return false;
+        smoothing_ = level > 0;
+        if (level > 0) {
+            const auto &l = kLevels[level - 1];
+            filter_params_.euro = *one_euro_params(nlohmann::json{{"min_cutoff", l.min_cutoff}, {"beta", l.beta}},
+                                                   filter_params_.euro);
+            filter_params_.deadzone = l.deadzone;
+        }
         return true;
     }
     if (key == "one_euro" && value.is_object()) {

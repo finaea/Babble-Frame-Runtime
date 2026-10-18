@@ -46,7 +46,7 @@ void DashboardView::render_mouth(Canvas &c) {
     render_tabs(c, W - kMargin, {"Camera", "Shapes"}, fork_.mouth_tab, "tab:mouth");
 
     if (fork_.mouth_tab == 0) {
-        // The preview, with the crop box in source pixels.
+        // The preview, flipped and rotated as the model sees it, with the crop box (stored in source pixels).
         const Rect view{kMargin, 140, 400, 400};
         c.fill_rect(view, kBg, 4);
         c.stroke_rect(view, kLine, 4, 1);
@@ -54,33 +54,39 @@ void DashboardView::render_mouth(Canvas &c) {
         const bool url_mode = setting("/sources/face/mode", "usb") == "url";
         const std::string url = setting("/sources/face/url", "").get<std::string>();
         if (img && img->width && img->height) {
-            const float w = float(img->width), h = float(img->height);
+            PreviewTransform tf;
+            tf.w = float(img->width);
+            tf.h = float(img->height);
+            const json rot = setting("/pipelines/face/rotate", 0);
+            tf.q = rot.is_number() ? (int(rot.get<double>()) / 90 % 4 + 4) % 4 : 0;
+            const json flip = setting("/pipelines/face/flip", "none");
+            const std::string fl = flip.is_string() ? flip.get<std::string>() : "none";
+            tf.fh = fl.find('h') != std::string::npos;
+            tf.fv = fl.find('v') != std::string::npos;
+            const float w = tf.view_w(), h = tf.view_h();
             const float s = std::min(view.w / w, view.h / h);
             const float ox = view.x + (view.w - w * s) / 2, oy = view.y + (view.h - h * s) / 2;
             for (int y = int(oy); y < int(oy + h * s); y++)
                 for (int x = int(ox); x < int(ox + w * s); x++) {
-                    const uint32_t sx = std::min(img->width - 1, uint32_t((x - ox) / s));
-                    const uint32_t sy = std::min(img->height - 1, uint32_t((y - oy) / s));
+                    const auto [fx, fy] = tf.to_source((x - ox + 0.5f) / s, (y - oy + 0.5f) / s);
+                    const uint32_t sx = std::min(img->width - 1, uint32_t(std::max(0.f, fx)));
+                    const uint32_t sy = std::min(img->height - 1, uint32_t(std::max(0.f, fy)));
                     const uint8_t g = img->pixels[size_t(sy) * img->width + sx];
                     c.blend(x, y, {g, g, g, 255}, 1);
                 }
-            // An ROI that is empty or does not fit means the whole frame.
-            float bx = 0, by = 0, bw = w, bh = h;
+            // An ROI that is empty or does not fit means the whole frame. src is in source pixels, vb in the preview's.
+            Rect src{0, 0, tf.w, tf.h};
             const json roi = setting("/pipelines/face/roi", json::array());
             if (roi.is_array() && roi.size() == 4 && roi[2].get<float>() > 0 && roi[3].get<float>() > 0 &&
-                roi[0].get<float>() + roi[2].get<float>() <= w && roi[1].get<float>() + roi[3].get<float>() <= h) {
-                bx = roi[0];
-                by = roi[1];
-                bw = roi[2];
-                bh = roi[3];
-            }
+                roi[0].get<float>() + roi[2].get<float>() <= tf.w && roi[1].get<float>() + roi[3].get<float>() <= tf.h)
+                src = {roi[0].get<float>(), roi[1].get<float>(), roi[2].get<float>(), roi[3].get<float>()};
+            Rect vb = tf.box_to_view(src);
             const DragState &d = fork_.drag;
             if ((d.kind == DragState::Kind::CropMove || d.kind == DragState::Kind::CropResize) && d.view.w > 0) {
-                bx = d.view.x;
-                by = d.view.y;
-                bw = d.view.w;
-                bh = d.view.h;
+                vb = d.view;
+                src = tf.box_to_source(vb);
             }
+            const float bx = vb.x, by = vb.y, bw = vb.w, bh = vb.h;
             const Rect box{ox + bx * s, oy + by * s, bw * s, bh * s};
             const Color shade = Color::hex(0x000000, 150);
             c.fill_rect({ox, oy, w * s, box.y - oy}, shade);
@@ -89,7 +95,8 @@ void DashboardView::render_mouth(Canvas &c) {
             c.fill_rect({box.x + box.w, box.y, ox + w * s - box.x - box.w, box.h}, shade);
             c.stroke_rect(box, kAccentHover, 0, 3);
             c.fill_circle(box.x + box.w, box.y + box.h, 13, kText);
-            json geo = {{"scale", s}, {"w", w}, {"h", h}, {"bx", bx}, {"by", by}, {"bs", std::min(bw, bh)}};
+            json geo = {{"scale", s}, {"w", w},    {"h", h},    {"bx", bx},   {"by", by},   {"bs", std::min(bw, bh)},
+                        {"sw", tf.w}, {"sh", tf.h}, {"q", tf.q}, {"fh", tf.fh}, {"fv", tf.fv}};
             Hit resize{Hit::Fork, {box.x + box.w - 30, box.y + box.h - 30, 60, 60}};
             resize.text = "crop:resize";
             resize.json = geo;
@@ -100,10 +107,10 @@ void DashboardView::render_mouth(Canvas &c) {
             hits_.push_back(move);
             char buf[64];
             if (roi.empty())
-                snprintf(buf, sizeof(buf), "Crop: whole frame (%.0f × %.0f)", double(w), double(h));
-            else
-                snprintf(buf, sizeof(buf), "Crop: %.0f, %.0f  ·  %.0f × %.0f", double(bx), double(by),
-                         double(bw), double(bh));
+                snprintf(buf, sizeof(buf), "Crop: whole frame (%.0f × %.0f)", double(tf.w), double(tf.h));
+            else   // In source pixels, as saved.
+                snprintf(buf, sizeof(buf), "Crop: %.0f, %.0f  ·  %.0f × %.0f", double(src.x), double(src.y),
+                         double(src.w), double(src.h));
             regular_.draw(c, kMargin, 572, buf, 20, kText);
         } else {
             const std::string msg = url_mode && url.empty() ? "Set a stream URL" : url_mode ? "Waiting for the stream"

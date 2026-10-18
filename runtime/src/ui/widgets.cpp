@@ -254,6 +254,11 @@ void DashboardView::click_fork(const Hit &h, ClickResult &out, Point p) {
         d.bs = h.json["bs"];
         d.px = p.x;
         d.py = p.y;
+        d.tf.w = h.json["sw"];
+        d.tf.h = h.json["sh"];
+        d.tf.q = h.json["q"];
+        d.tf.fh = h.json["fh"];
+        d.tf.fv = h.json["fv"];
     } else if (a == "crop:whole") {
         send(out, "/pipelines/face/roi", json::array());
     }
@@ -296,9 +301,12 @@ DashboardView::ClickResult DashboardView::release(Point p) {
         const json v = json::array({round2(d.min), round2(d.max)});
         if (v[0].get<float>() < v[1].get<float>() && v != json::array({round2(r.min), round2(r.max)}))
             send(out, d.pointer, v);
-    } else if (d.view.w > 0) {   // The crop box moved, and view holds the new box in source pixels.
-        send(out, "/pipelines/face/roi",
-             json::array({std::lround(d.view.x), std::lround(d.view.y), std::lround(d.view.w), std::lround(d.view.h)}));
+    } else if (d.view.w > 0) {   // The crop box moved; view holds it in the preview's pixels, so map it back.
+        const Rect r = d.tf.box_to_source(d.view);
+        const long x = std::clamp(std::lround(r.x), 0L, std::lround(d.tf.w) - 1);
+        const long y = std::clamp(std::lround(r.y), 0L, std::lround(d.tf.h) - 1);
+        const long side = std::min({std::lround(r.w), std::lround(d.tf.w) - x, std::lround(d.tf.h) - y});
+        send(out, "/pipelines/face/roi", json::array({x, y, side, side}));
     }
     d = {};
     out.redraw = true;

@@ -253,15 +253,18 @@ void EyecamSquintSink::process(const StereoFrame &sf) {
     processed_.tick();
 }
 
-// The calibration: eyecam's wear protocol, then its user protocol (eyecam-rec.rs:2085-2093).
+// The calibration: eyecam's wear protocol, then its user protocol (eyecam-rec.rs:2085-2093). The wear part leaves out
+// eyecam's two widen steps: squint only needs the closed and normal levels (live.rs:1649), and without a widen the
+// wear fit uses its fallback widen step and still passes (live.rs:1484-1485). The widen it measures only drives
+// eyecam's EyeWide, and the fork sends Babble's widen.
 namespace {
 constexpr struct {
     const char *label;
     double seconds;
     bool user;
 } kSteps[] = {
-    {"lead_in", 3, false}, {"close", 2, false},  {"normal", 5, false},  {"widen", 3, false},     {"normal", 2, false},
-    {"widen", 3, false},   {"lead_in", 3, true}, {"squint", 5, true},   {"look_up", 5, true},    {"look_down", 5, true},
+    {"lead_in", 3, false}, {"close", 2, false},   {"normal", 5, false},    {"lead_in", 3, true},
+    {"squint", 5, true},   {"look_up", 5, true},  {"look_down", 5, true},
 };
 constexpr int kStepCount = int(sizeof(kSteps) / sizeof(kSteps[0]));
 }

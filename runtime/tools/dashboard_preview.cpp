@@ -220,9 +220,9 @@ int main(int argc, char **argv) {
             return d;
         };
         std::vector<Choice> fork_choices = choices;
-        fork_choices.push_back({"/pipelines/gaze/smoothing", "Gaze Smoothing",
-                                "On: frameeyeosc's filter, deadzone and hold while shut. Off: Valve's raw gaze.", "",
-                                {0, 1}, 1, true, false, {}, "gaze"});
+        fork_choices.push_back({"/pipelines/gaze/smoothing_strength", "Gaze Smoothing",
+                                "Higher is steadier but follows later. Off is Valve's raw gaze.",
+                                "", {0, 1, 2, 3}, 1, false, false, {"Off", "Low", "Medium", "High"}, "gaze"});
         fork_choices.push_back({"/pipelines/eye/blink_hold_ms", "Blink Hold",
                                 "Keeps a blink closed long enough for other players to see it. Your mirror doesn't need it.",
                                 "ms", {0, 50, 100, 150}, 0, false, false, {"Off", "50", "100", "150"}, "eyelids"});

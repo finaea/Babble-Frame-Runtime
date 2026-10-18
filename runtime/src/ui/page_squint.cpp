@@ -106,7 +106,7 @@ void DashboardView::render_squint(Canvas &c, const std::vector<Choice> &choices)
             y += kRow;
         }
     regular_.draw(c, 150, kBottomY + 39,
-                  fit(regular_, "The routine takes about 40 s: close, look, widen, squint, then look up and down. "
+                  fit(regular_, "The routine takes about 30 s: close, look normally, squint, then look up and down. "
                                 "Keep the head still.", 20, W - kMargin - 150),
                   20, kMuted);
 }

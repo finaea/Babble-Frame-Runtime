@@ -190,9 +190,7 @@
       "pitch_offset": 0,
       "roll_offset": 0,
       "stale_s": 0.5,
-      "smoothing": true,
-      "one_euro": { "min_cutoff": 0.3, "beta": 1.5, "d_cutoff": 0.5 },
-      "deadzone": 0.005,
+      "smoothing_strength": 1,
       "hold_closed_below": 0.5,
       "ranges": {
         "LeftEyeX": [-1, 1], "LeftEyeY": [-1, 1],
@@ -376,10 +374,12 @@
         "labels": ["1:1", "1:2", "1:3"]
       },
       {
-        "id": "/pipelines/gaze/smoothing",
+        "id": "/pipelines/gaze/smoothing_strength",
         "page": "gaze",
         "label": "Gaze Smoothing",
-        "hint": "On: frameeyeosc's filter, deadzone and hold while shut. Off: Valve's raw gaze."
+        "hint": "Higher is steadier but follows later. Off is Valve's raw gaze.",
+        "options": [0, 1, 2, 3],
+        "labels": ["Off", "Low", "Medium", "High"]
       },
       {
         "id": "/pipelines/eye/blink_hold_ms",
