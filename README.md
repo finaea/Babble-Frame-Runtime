@@ -24,8 +24,8 @@ Babble's models and output, and adds:
 - **Manual calibration** in the Baballonia style (a minimum and a maximum per value) for eyelids, widen, squint, pupils,
   gaze and the 45 mouth shapes. The eyes keep the runtime's automatic calibration underneath; the mouth uses the manual
   ranges by default.
-- **Any mouth camera that streams MJPEG over HTTP**, as well as the USB camera: set Camera to Stream URL on the Mouth
-  page and enter the address. A live preview there sets the crop.
+- **Mouth camera from any MJPEG-over-HTTP stream**: set Camera to Stream URL
+  on the Mouth page and enter the address. A live preview there sets the crop.
 - **Mouth from Baballonia on the PC:** set Camera to PC App on the Mouth page. The runtime then opens no mouth camera
   and runs no mouth model, but with Mouth Tracking on it still tells the VRCFaceTracking module to claim face tracking,
   so the module takes the mouth from Baballonia and the eyes from the headset.
