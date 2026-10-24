@@ -26,6 +26,10 @@ Babble's models and output, and adds:
   ranges by default.
 - **Mouth camera from any MJPEG-over-HTTP stream**: set Camera to Stream URL
   on the Mouth page and enter the address. A live preview there sets the crop.
+- **Any USB webcam as the mouth camera,** not only a Babble tracker: with Camera set to USB, the runtime reads a
+  standard UVC camera directly, bulk or isochronous, MJPEG or YUYV. The Mouth page picks the camera and its resolution
+  and frame rate, and says when another app holds the camera. The crop box has four corner handles and a Keep square
+  switch; Babble recommends a square box or one taller than wide.
 - **Mouth from Baballonia on the PC:** set Camera to PC App on the Mouth page. The runtime then opens no mouth camera
   and runs no mouth model, but with Mouth Tracking on it still tells the VRCFaceTracking module to claim face tracking,
   so the module takes the mouth from Baballonia and the eyes from the headset.

@@ -101,8 +101,8 @@ bool FaceCameraSource::set_option(const std::string &key, const nlohmann::json &
         return true;
     }
     // The USB options also apply after a later change back to the USB mode.
-    if (key == "camera" && value.is_string()) {
-        cfg_["camera"] = value;
+    if (BabbleUsbSource::valid_option(key, value)) {
+        cfg_[key] = value;
         if (auto *u = usb())
             u->set_option(key, value);
         return true;

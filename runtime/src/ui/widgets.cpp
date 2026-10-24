@@ -242,16 +242,19 @@ void DashboardView::click_fork(const Hit &h, ClickResult &out, Point p) {
         const float dm = std::fabs(v - d.min), dx = std::fabs(v - d.max);
         d.handle = dm < dx ? 0 : dx < dm ? 1 : v > d.max ? 1 : 0;
         drag(p);
-    } else if (a == "crop:move" || a == "crop:resize") {
+    } else if (a == "crop:move" || a == "crop:corner") {
         DragState &d = fork_.drag;
         d = {};
-        d.kind = a == "crop:move" ? DragState::Kind::CropMove : DragState::Kind::CropResize;
+        d.kind = a == "crop:move" ? DragState::Kind::CropMove : DragState::Kind::CropCorner;
+        d.corner = int(h.value);
         d.scale = h.json["scale"];
         d.img_w = h.json["w"];
         d.img_h = h.json["h"];
         d.bx = h.json["bx"];
         d.by = h.json["by"];
-        d.bs = h.json["bs"];
+        d.bw = h.json["bw"];
+        d.bh = h.json["bh"];
+        d.square = h.json["sq"];
         d.px = p.x;
         d.py = p.y;
         d.tf.w = h.json["sw"];
@@ -261,6 +264,30 @@ void DashboardView::click_fork(const Hit &h, ClickResult &out, Point p) {
         d.tf.fv = h.json["fv"];
     } else if (a == "crop:whole") {
         send(out, "/pipelines/face/roi", json::array());
+    } else if (a == "crop:square") {
+        // Turning the lock on makes the box a square of its shorter side around its centre.
+        const bool on = h.value > 0.5;
+        send(out, "/pipelines/face/roi_square", on);
+        const json roi = setting("/pipelines/face/roi", json::array());
+        if (on && roi.is_array() && roi.size() == 4 && roi[2] != roi[3]) {
+            const double x = roi[0], y = roi[1], w = roi[2], hh = roi[3], side = std::floor(std::min(w, hh));
+            if (side > 0)
+                send(out, "/pipelines/face/roi",
+                     json::array({std::lround(x + (w - side) / 2), std::lround(y + (hh - side) / 2), long(side), long(side)}));
+        }
+    } else if (a == "open:cameras") {
+        page_ = Page::Cameras;
+        fork_.cameras_from_mouth = true;
+        out.refresh_cameras = true;   // Show the cameras that are connected now.
+    } else if (a == "open:modes") {
+        page_ = Page::Resolution;
+        fork_.mode_page = 0;
+    } else if (a == "modes:prev" || a == "modes:next") {
+        fork_.mode_page = std::max(0, fork_.mode_page + (a == "modes:next" ? 1 : -1));
+    } else if (a == "mode") {
+        // The items are [pointer, value] and go out in one click, so the camera restarts once.
+        for (const json &item : h.json)
+            send(out, item[0].get<std::string>(), item[1]);
     }
 }
 
@@ -275,15 +302,12 @@ bool DashboardView::drag(Point p) {
         return true;
     }
     if (d.kind == DragState::Kind::CropMove) {
-        d.view.x = std::clamp(d.bx + (p.x - d.px) / d.scale, 0.f, d.img_w - d.bs);
-        d.view.y = std::clamp(d.by + (p.y - d.py) / d.scale, 0.f, d.img_h - d.bs);
-        d.view.w = d.view.h = d.bs;
+        d.view = drag_move({d.bx, d.by, d.bw, d.bh}, (p.x - d.px) / d.scale, (p.y - d.py) / d.scale, d.img_w, d.img_h);
         return true;
     }
-    if (d.kind == DragState::Kind::CropResize) {
-        const float grow = std::max(p.x - d.px, p.y - d.py) / d.scale;
-        const float s = std::clamp(d.bs + grow, 32.f, std::min(d.img_w - d.bx, d.img_h - d.by));
-        d.view = {d.bx, d.by, s, s};
+    if (d.kind == DragState::Kind::CropCorner) {
+        d.view = drag_corner({d.bx, d.by, d.bw, d.bh}, d.corner, (p.x - d.px) / d.scale, (p.y - d.py) / d.scale, d.img_w,
+                             d.img_h, d.square);
         return true;
     }
     return false;
@@ -305,8 +329,10 @@ DashboardView::ClickResult DashboardView::release(Point p) {
         const Rect r = d.tf.box_to_source(d.view);
         const long x = std::clamp(std::lround(r.x), 0L, std::lround(d.tf.w) - 1);
         const long y = std::clamp(std::lround(r.y), 0L, std::lround(d.tf.h) - 1);
-        const long side = std::min({std::lround(r.w), std::lround(d.tf.w) - x, std::lround(d.tf.h) - y});
-        send(out, "/pipelines/face/roi", json::array({x, y, side, side}));
+        long w = std::min(std::lround(r.w), std::lround(d.tf.w) - x), h = std::min(std::lround(r.h), std::lround(d.tf.h) - y);
+        if (d.square)
+            w = h = std::min(w, h);
+        send(out, "/pipelines/face/roi", json::array({x, y, w, h}));
     }
     d = {};
     out.redraw = true;

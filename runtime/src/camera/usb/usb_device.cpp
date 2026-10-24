@@ -128,9 +128,11 @@ void Device::close() {
     fd_ = -1;
 }
 
-std::vector<uint8_t> Device::config_descriptor() const {
+std::vector<uint8_t> Device::config_descriptor() const { return usb::config_descriptor(sysfs_); }
+
+std::vector<uint8_t> config_descriptor(const std::string &sysfs) {
     // The sysfs "descriptors" file has the 18-byte device descriptor and then the configurations.
-    std::ifstream in(sysfs_ + "/descriptors", std::ios::binary);
+    std::ifstream in(sysfs + "/descriptors", std::ios::binary);
     std::vector<uint8_t> all((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     if (all.size() <= 18)
         return {};
@@ -140,10 +142,12 @@ std::vector<uint8_t> Device::config_descriptor() const {
 bool Device::claim(uint8_t iface, std::string *error) {
     unsigned int i = iface;
     if (ioctl(fd_, USBDEVFS_CLAIMINTERFACE, &i) != 0) {
+        claim_errno_ = errno;
         if (error)
-            *error = "claim interface " + std::to_string(iface) + ": " + strerror(errno);
+            *error = "claim interface " + std::to_string(iface) + ": " + strerror(claim_errno_);
         return false;
     }
+    claim_errno_ = 0;
     claimed_.push_back(iface);
     return true;
 }

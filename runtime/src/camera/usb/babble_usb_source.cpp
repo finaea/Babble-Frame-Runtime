@@ -6,7 +6,9 @@
 #include "core/log.h"
 #include "platform/steamvr_client.h"
 
+#include <cmath>
 #include <cstdlib>
+#include <tuple>
 
 namespace {
 const babble::log::Logger LOG("usb");
@@ -38,8 +40,8 @@ BabbleUsbSource::BabbleUsbSource(const nlohmann::json &cfg, SourceDeps deps)
       pause_when_absent_(cfg.value("pause_when_absent", true)), tracking_(cfg.value("tracking", true)),
       camera_(cfg.value("camera", "")),
       vendor_(hex_id(cfg, "vendor", 0x303a)), product_(hex_id(cfg, "product", 0x8000)),
-      width_(cfg.value("width", uint16_t(240))), height_(cfg.value("height", uint16_t(240))),
-      fps_(cfg.value("fps", 30.0)), limiter_(cfg.value("process_fps", 30.0)) {
+      format_(cfg.value("format", "auto")), width_(cfg.value("width", uint16_t(240))),
+      height_(cfg.value("height", uint16_t(240))), fps_(cfg.value("fps", 30.0)), limiter_(cfg.value("process_fps", 30.0)) {
     const auto backoff = cfg.value("reopen_backoff_ms", nlohmann::json::object());
     backoff_min_ns_ = uint64_t(backoff.value("min", 1000)) * 1000000ull;
     backoff_max_ns_ = uint64_t(backoff.value("max", 10000)) * 1000000ull;
@@ -92,9 +94,56 @@ const char *BabbleUsbSource::state_name() const {
     return "?";
 }
 
+bool BabbleUsbSource::valid_option(const std::string &key, const nlohmann::json &value) {
+    if (key == "camera")
+        return value.is_string();
+    if (key == "format")
+        return value == "auto" || value == "mjpeg" || value == "yuyv";
+    if (key == "width" || key == "height")
+        return value.is_number() && value.get<double>() >= 1 && value.get<double>() <= 65535;
+    if (key == "fps")
+        return value.is_number() && value.get<double>() > 0;
+    return false;
+}
+
+BabbleUsbSource::StreamStatus BabbleUsbSource::stream_status() const {
+    using S = StreamStatus::State;
+    StreamStatus s;
+    if (state_ == State::Streaming && opened_) {
+        s.state = S::Streaming;
+        s.yuyv = stream_yuyv_;
+        s.width = stream_width_;
+        s.height = stream_height_;
+        s.fps_asked = stream_fps_;
+        s.fps_real = fps_real_.load(std::memory_order_relaxed);
+    } else if (state_ == State::Streaming && !backoff_ns_) {
+        s.state = S::Opening;
+    } else if (state_ == State::Backoff || state_ == State::Streaming) {
+        // A retry after a failure shows that failure until the camera opens.
+        s.state = last_busy_ ? S::Busy : S::Error;
+        s.error = last_error_;
+    }
+    return s;
+}
+
 bool BabbleUsbSource::set_option(const std::string &key, const nlohmann::json &value) {
-    if (key != "camera" || !value.is_string())
+    if (!valid_option(key, value))
         return false;
+    if (key != "camera") {
+        // Several of these keys come in one batch, so the stream restarts one time on the next tick.
+        const auto old = std::make_tuple(format_, width_, height_, fps_);
+        if (key == "format")
+            format_ = value.get<std::string>();
+        else if (key == "width")
+            width_ = uint16_t(std::lround(value.get<double>()));
+        else if (key == "height")
+            height_ = uint16_t(std::lround(value.get<double>()));
+        else
+            fps_ = value.get<double>();
+        if (std::make_tuple(format_, width_, height_, fps_) != old)
+            mode_changed_ = true;
+        return true;
+    }
     if (value.get<std::string>() == camera_)
         return true;
     camera_ = value.get<std::string>();
@@ -139,7 +188,10 @@ bool BabbleUsbSource::start(const usb::Found &dev) {
     opened_ = false;
     limiter_.reset();
     active_id_ = usb::device_id(dev);
-    thread_ = start_thread(thread_spec_, [this, dev] { run(dev); });
+    thread_busy_ = false;
+    thread_ = start_thread(thread_spec_, [this, dev, format = format_, w = width_, h = height_, fps = fps_] {
+        run(dev, format, w, h, fps);
+    });
     return true;
 }
 
@@ -152,29 +204,40 @@ void BabbleUsbSource::stop(const char *why) {
     LOG.info("%s: stopped (%s)", name_.c_str(), why);
 }
 
-void BabbleUsbSource::run(usb::Found dev) {
+void BabbleUsbSource::run(usb::Found dev, std::string format, uint16_t width, uint16_t height, double fps) {
     uvc::Camera cam;
     std::string err;
-    if (!cam.open(dev, width_, height_, fps_, &err)) {
-        thread_error_ = "cannot open " + usb::device_label(dev) + ": " + err;
+    if (!cam.open(dev, format, width, height, fps, &err)) {
+        thread_busy_ = cam.busy();
+        thread_error_ = cam.busy() ? usb::device_label(dev) + " is in use by another program"
+                                   : "cannot open " + usb::device_label(dev) + ": " + err;
         failed_ = true;
         return;
     }
-    opened_ = true;
     const auto &p = cam.negotiated();
-    LOG.info("%s: streaming %s (%s, %s): MJPEG %ux%u at %.0f fps", name_.c_str(), usb::device_label(dev).c_str(),
-             usb::device_id(dev).c_str(), dev.node.c_str(), cam.frame_size().width, cam.frame_size().height,
-             p.frame_interval ? 1e7 / p.frame_interval : 0.0);
+    const bool yuyv = cam.yuyv();
+    const uint32_t frame_w = cam.frame_size().width, frame_h = cam.frame_size().height;
+    stream_yuyv_ = yuyv;
+    stream_width_ = uint16_t(frame_w);
+    stream_height_ = uint16_t(frame_h);
+    stream_fps_ = p.frame_interval ? 1e7 / p.frame_interval : 0.0;
+    fps_real_ = 0;
+    opened_ = true;
+    LOG.info("%s: streaming %s (%s, %s): %s %ux%u at %.0f fps", name_.c_str(), usb::device_label(dev).c_str(),
+             usb::device_id(dev).c_str(), dev.node.c_str(), yuyv ? "YUYV" : "MJPEG", frame_w, frame_h, stream_fps_);
 
     uint32_t seq = 0;
     uint64_t last_dropped = 0;
     // Log a stream report at debug level each 10 s.
     uint64_t report_at = mono_ns() + 10'000'000'000ull, frames_in = 0, frames_kept = 0, bytes_in = 0;
+    // Measure the camera rate over about 2 s.
+    uint64_t rate_from = mono_ns(), rate_frames = 0;
     while (!stop_) {
         const bool ok = cam.read(200, [&](const uint8_t *data, size_t size) {
             const uint64_t now = mono_ns();
             frames_.tick();
             frames_in++;
+            rate_frames++;
             bytes_in += size;
             // The frame tap gets all frames, but tracking gets only the frames that the limiter accepts.
             IFrameTap *tap = tap_.load(std::memory_order_relaxed);
@@ -189,7 +252,15 @@ void BabbleUsbSource::run(usb::Found dev) {
             }
             int w = 0, h = 0;
             uint8_t *dst = const_cast<uint8_t *>(frame->data);
-            if (!uvc::looks_like_jpeg(data, size) || !jpeg::decode_gray(data, size, dst, kMaxPixels, &w, &h)) {
+            if (yuyv) {
+                // A YUYV frame of the wrong size lost data, so drop it.
+                if (!uvc::yuyv_to_gray(data, size, frame_w, frame_h, dst)) {
+                    undecodable_.add();
+                    return;
+                }
+                w = int(frame_w);
+                h = int(frame_h);
+            } else if (!uvc::looks_like_jpeg(data, size) || !jpeg::decode_gray(data, size, dst, kMaxPixels, &w, &h)) {
                 undecodable_.add();
                 return;
             }
@@ -214,6 +285,11 @@ void BabbleUsbSource::run(usb::Found dev) {
             frames_kept++;
             out_.put(std::move(sf));
         }, &err);
+        if (const uint64_t t = mono_ns(); t - rate_from >= 2'000'000'000ull) {
+            fps_real_ = double(rate_frames) * 1e9 / double(t - rate_from);
+            rate_from = t;
+            rate_frames = 0;
+        }
         if (const uint64_t t = mono_ns(); t >= report_at) {
             LOG.debug("%s: %llu frames in 10 s (%.1f KB avg), %llu passed on, %llu dropped in reassembly", name_.c_str(),
                       (unsigned long long)frames_in, frames_in ? double(bytes_in) / 1024.0 / double(frames_in) : 0.0,
@@ -238,6 +314,18 @@ void BabbleUsbSource::tick(uint64_t now) {
     const bool absent = pause_when_absent_ && steamvr_ && steamvr_->worn() == Worn::No;
     const bool hold = !tracking_ || absent;
     const char *why = !tracking_ ? "tracking turned off" : "headset not worn";
+    if (mode_changed_) {
+        mode_changed_ = false;
+        LOG.info("%s: mode set to %s %ux%u at %.0f fps", name_.c_str(), format_.c_str(), width_, height_, fps_);
+        if (state_ == State::Streaming)
+            stop("changing mode");
+        if (state_ == State::Streaming || state_ == State::Backoff) {
+            state_ = State::Waiting;
+            retry_at_ns_ = backoff_ns_ = 0;
+            last_error_.clear();
+            last_busy_ = false;
+        }
+    }
     switch (state_) {
     case State::Disabled: return;
     case State::Paused:
@@ -256,9 +344,11 @@ void BabbleUsbSource::tick(uint64_t now) {
         if (opened_ && backoff_ns_) {   // The camera works again, so the next failure starts at the minimum backoff.
             backoff_ns_ = 0;
             last_error_.clear();
+            last_busy_ = false;
         }
         if (failed_) {
             last_error_ = thread_error_;
+            last_busy_ = thread_busy_;
             stop(last_error_.c_str());
             restarts_.add();
             // Wait quietly for an unplugged camera, and wait and try again after other errors.

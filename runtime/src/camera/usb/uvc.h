@@ -1,6 +1,6 @@
 #pragma once
 
-// The parts of USB Video Class that the runtime uses to stream an MJPEG camera from user space, without I/O.
+// The parts of USB Video Class that the runtime uses to stream an MJPEG or YUYV camera from user space, without I/O.
 
 #include <cstddef>
 #include <cstdint>
@@ -10,11 +10,25 @@
 
 namespace babble::uvc {
 
+// The largest frame that the frame buffers accept.
+inline constexpr uint32_t kMaxPixels = 640 * 480;
+
 struct FrameSize {
     uint8_t index = 0;                    // This is bFrameIndex.
     uint16_t width = 0, height = 0;
     uint32_t default_interval = 0;        // The unit is 100 ns.
     uint32_t max_frame_bytes = 0;
+    // The discrete intervals, or min, max and step if continuous is true.
+    std::vector<uint32_t> intervals;
+    bool continuous = false;
+};
+
+// A streaming alternate setting with its IN endpoint.
+struct AltSetting {
+    uint8_t alt = 0;
+    uint8_t endpoint = 0;
+    uint32_t packet_bytes = 0;            // The bytes per (micro)frame, with the high-bandwidth multiplier.
+    bool bulk = false;
 };
 
 // The features of a UVC device, from its configuration descriptor.
@@ -27,13 +41,45 @@ struct Info {
     bool bulk = false;                    // True for a bulk endpoint, false for an isochronous endpoint.
     uint8_t mjpeg_format = 0;             // The bFormatIndex of the MJPEG format, or 0 if there is none.
     std::vector<FrameSize> mjpeg_frames;
+    uint8_t yuyv_format = 0;              // The bFormatIndex of the uncompressed YUY2 format, or 0 if there is none.
+    std::vector<FrameSize> yuyv_frames;
+    std::vector<AltSetting> alts;         // All streaming alternate settings that have an IN endpoint.
 };
 
 // Parses a full configuration descriptor and returns nullopt if it has no video streaming interface.
 std::optional<Info> parse_config(const uint8_t *data, size_t size, std::string *error = nullptr);
 
-// Returns the frame size that matches width x height, or else the first frame size.
+// Returns the MJPEG frame size that matches width x height, or else the first frame size.
 const FrameSize *pick_frame(const Info &info, uint16_t width, uint16_t height);
+
+// One frame size of one format for the settings, with the rates highest first.
+struct Mode {
+    bool yuyv = false;
+    uint16_t width = 0, height = 0;
+    std::vector<double> fps;
+    bool too_large = false;               // True if width x height is more than kMaxPixels.
+};
+
+// Returns the MJPEG modes and then the YUYV modes, each group largest first.
+std::vector<Mode> list_modes(const Info &info);
+
+// The format, frame size and interval to negotiate.
+struct Choice {
+    bool yuyv = false;
+    uint8_t format_index = 0;
+    FrameSize frame;
+    uint32_t interval = 0;                // The unit is 100 ns.
+};
+
+// Picks the mode for the settings: format is "auto", "mjpeg" or "yuyv", and fps 0 means the default rate.
+std::optional<Choice> pick_mode(const Info &info, const std::string &format, uint16_t width, uint16_t height,
+                                double fps, std::string *error = nullptr);
+
+// Returns the isochronous setting with the smallest packet that holds max_payload bytes, or null.
+const AltSetting *pick_alt(const Info &info, uint32_t max_payload);
+
+// Copies the Y bytes of a YUYV frame to gray and returns false if the frame is not width x height x 2 bytes.
+bool yuyv_to_gray(const uint8_t *data, size_t size, uint32_t width, uint32_t height, uint8_t *gray);
 
 // The VS_PROBE_CONTROL and VS_COMMIT_CONTROL block, with a length that changes with the UVC version.
 struct Probe {
@@ -55,6 +101,8 @@ public:
     bool push(const uint8_t *payload, size_t size);
     std::vector<uint8_t> &frame() { return done_; }
     uint64_t dropped() const { return dropped_; }
+    // Drops the frame that is being built, for example after a lost isochronous packet.
+    void mark_bad() { bad_ = true; }
     void reset();
 
 private:
@@ -66,7 +114,7 @@ private:
     uint64_t dropped_ = 0;
 };
 
-// Returns true if the data starts with SOI (FF D8) and ends with EOI (FF D9).
+// Returns true if the data starts with SOI (FF D8) and has EOI (FF D9) at the end, or before padding at the end.
 bool looks_like_jpeg(const uint8_t *data, size_t size);
 
 }

@@ -33,6 +33,9 @@ std::string device_id(const Found &f);
 // Returns a human-readable name as "Manufacturer Product".
 std::string device_label(const Found &f);
 
+// Returns the active configuration descriptor of a device from its sysfs directory, without opening it.
+std::vector<uint8_t> config_descriptor(const std::string &sysfs);
+
 class Device {
 public:
     ~Device();
@@ -45,6 +48,8 @@ public:
     std::vector<uint8_t> config_descriptor() const;
 
     bool claim(uint8_t iface, std::string *error);
+    // Returns the errno of the last failed claim, which is EBUSY if another program holds the interface.
+    int claim_errno() const { return claim_errno_; }
     void release(uint8_t iface);
     bool set_interface(uint8_t iface, uint8_t alt);
     bool clear_halt(uint8_t endpoint);
@@ -54,6 +59,7 @@ public:
 
 private:
     int fd_ = -1;
+    int claim_errno_ = 0;
     std::string sysfs_;
     std::vector<uint8_t> claimed_;
 };

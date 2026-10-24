@@ -69,7 +69,7 @@ private:
 
 // What a laser drag on these pages moves.
 struct DragState {
-    enum class Kind { None, Range, CropMove, CropResize } kind = Kind::None;
+    enum class Kind { None, Range, CropMove, CropCorner } kind = Kind::None;
     // For Range: the setting, the track, the value domain and the handle (0 min, 1 max).
     std::string pointer;
     Rect track;
@@ -78,14 +78,41 @@ struct DragState {
     float min = 0, max = 1;
     // For the crop box, all in the preview's (flipped and rotated) pixels: the box, the scale in canvas pixels per
     // pixel, the image size, the box at the start of the drag, and the pointer at the start. tf maps them back to
-    // source pixels.
+    // source pixels. corner is 0 top left, 1 top right, 2 bottom left, 3 bottom right; the opposite corner stays.
     Rect view;
     float scale = 1;
     float img_w = 0, img_h = 0;
-    float bx = 0, by = 0, bs = 0;
+    float bx = 0, by = 0, bw = 0, bh = 0;
     float px = 0, py = 0;
+    int corner = 3;
+    bool square = true;   // The box keeps equal sides.
     PreviewTransform tf;
 };
+
+// The smallest side of the crop box, in preview pixels.
+inline constexpr float kMinCrop = 32;
+
+// Returns the box after a drag of a corner by (dx, dy) preview pixels, with the opposite corner fixed, inside the
+// image and at least kMinCrop on each side. A square box takes the larger of the two sides that the drag asks for.
+inline Rect drag_corner(Rect b, int corner, float dx, float dy, float img_w, float img_h, bool square) {
+    const bool right = corner & 1, bottom = corner & 2;
+    const float ax = right ? b.x : b.x + b.w, ay = bottom ? b.y : b.y + b.h;   // The fixed corner.
+    const float room_w = right ? img_w - ax : ax, room_h = bottom ? img_h - ay : ay;
+    float w = b.w + (right ? dx : -dx), h = b.h + (bottom ? dy : -dy);
+    if (square)
+        w = h = std::clamp(std::max(w, h), std::min(kMinCrop, std::min(room_w, room_h)), std::min(room_w, room_h));
+    else {
+        w = std::clamp(w, std::min(kMinCrop, room_w), room_w);
+        h = std::clamp(h, std::min(kMinCrop, room_h), room_h);
+    }
+    return {right ? ax : ax - w, bottom ? ay : ay - h, w, h};
+}
+
+// Returns the box after a move by (dx, dy) preview pixels, inside the image.
+inline Rect drag_move(Rect b, float dx, float dy, float img_w, float img_h) {
+    return {std::clamp(b.x + dx, 0.f, std::max(0.f, img_w - b.w)), std::clamp(b.y + dy, 0.f, std::max(0.f, img_h - b.h)),
+            b.w, b.h};
+}
 
 struct ForkPages {
     PageData data;
@@ -96,6 +123,8 @@ struct ForkPages {
     int mouth_tab = 0;     // 0 camera, 1 shapes.
     int shape_group = 0;   // jaw, mouth, cheek, nose, tongue.
     int shape_page = 0;
+    int mode_page = 0;                 // The page of the Resolution list.
+    bool cameras_from_mouth = false;   // Back on the camera page returns to the Mouth page.
 };
 
 }

@@ -137,7 +137,9 @@ void DashboardView::render(Canvas &c, const Status &status, const std::vector<Ch
     } else if (page_ == Page::Squint) {
         render_squint(c, choices);
     } else if (page_ == Page::Mouth) {
-        render_mouth(c);
+        render_mouth(c, status);
+    } else if (page_ == Page::Resolution) {
+        render_resolution(c, status);
     } else {
         render_settings(c, choices, status);
     }
@@ -728,7 +730,10 @@ DashboardView::ClickResult DashboardView::click(Point p) {
             break;
         case Hit::Back:
             restart_armed_until_ns_ = 0;
-            page_ = page_ == Page::Cameras || page_ == Page::Diagnostics || live_page() ? Page::Settings : Page::Home;
+            if (page_ == Page::Resolution || (page_ == Page::Cameras && fork_.cameras_from_mouth))
+                page_ = Page::Mouth;
+            else
+                page_ = page_ == Page::Cameras || page_ == Page::Diagnostics || live_page() ? Page::Settings : Page::Home;
             out.redraw = true;
             break;
         case Hit::OpenDiagnostics:
@@ -772,6 +777,7 @@ DashboardView::ClickResult DashboardView::click(Point p) {
         case Hit::OpenCameras:
             restart_armed_until_ns_ = 0;
             page_ = Page::Cameras;
+            fork_.cameras_from_mouth = false;
             out.refresh_cameras = true;   // Show the cameras that are connected now.
             out.redraw = true;
             break;

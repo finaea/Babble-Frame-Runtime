@@ -134,6 +134,8 @@ bool BabbleMonoFace::set_option(const std::string &key, const nlohmann::json &va
         LOG.info("pipeline %s: roi %s", name_.c_str(), value.dump().c_str());
         return true;
     }
+    if (key == "roi_square")
+        return value.is_boolean();   // The square lock of the crop box is for the tab only.
     if (key == "rotate") {
         // The Babble tab sends numbers as doubles, so accept a double that is a whole number.
         if (!value.is_number())

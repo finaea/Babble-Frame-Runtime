@@ -4,6 +4,7 @@
 #include "camera/tracking_source.h"
 #include "camera/face_camera_source.h"
 #include "camera/usb/babble_usb_source.h"
+#include "camera/usb/uvc.h"
 #include "capture/app_installer.h"
 #include "update/runtime_updater.h"
 #include "capture/capture_server.h"
@@ -574,7 +575,13 @@ int main(int argc, char **argv) {
             std::string detail = vp;
             if (!f.serial.empty())
                 detail += " \u00b7 serial " + f.serial;
-            usb_cameras.push_back({usb::device_id(f), usb::device_label(f), detail});
+            ui::UsbCamera cam{usb::device_id(f), usb::device_label(f), detail};
+            // Read the modes from the descriptors in sysfs, because opening the device can stop its stream.
+            const auto config = usb::config_descriptor(f.sysfs);
+            if (const auto info = uvc::parse_config(config.data(), config.size()))
+                for (const auto &m : uvc::list_modes(*info))
+                    cam.modes.push_back({m.yuyv ? "yuyv" : "mjpeg", m.width, m.height, m.fps, m.too_large});
+            usb_cameras.push_back(std::move(cam));
         }
     };
     refresh_usb_cameras();
@@ -1209,6 +1216,22 @@ int main(int argc, char **argv) {
             if (auto *usb = usb_source()) {
                 st.camera = usb->camera();
                 st.active_camera = usb->active_camera();
+                using U = ui::UsbStream::State;
+                using B = BabbleUsbSource::StreamStatus::State;
+                const auto s = usb->stream_status();
+                st.usb_stream.state = s.state == B::Opening     ? U::Opening
+                                      : s.state == B::Streaming ? U::Streaming
+                                      : s.state == B::Busy      ? U::Busy
+                                      : s.state == B::Error     ? U::Error
+                                                                : U::Waiting;
+                st.usb_stream.camera = usb->active_camera();
+                if (s.state == B::Streaming)
+                    st.usb_stream.format = s.yuyv ? "yuyv" : "mjpeg";
+                st.usb_stream.width = s.width;
+                st.usb_stream.height = s.height;
+                st.usb_stream.fps_asked = s.fps_asked;
+                st.usb_stream.fps_real = s.fps_real;
+                st.usb_stream.error = s.error;
             }
             for (auto &s : sources) {
                 // Show the eye rate that the share of the camera rate gives.

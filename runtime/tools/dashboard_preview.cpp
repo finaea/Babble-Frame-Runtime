@@ -15,6 +15,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <tuple>
 
 using namespace babble;
 using namespace babble::ui;
@@ -301,6 +302,139 @@ int main(int argc, char **argv) {
         view.set_page(DashboardView::Page::Home);
         view.render(c, release, choices, std::nullopt);
         save(c, "home_pc_app");
+    }
+
+    // The USB mouth camera: a GC0308-like camera at 640x480, its states, the free crop and the Resolution page.
+    {
+        auto cfg = std::make_shared<nlohmann::json>(nlohmann::json::parse(R"({
+            "sources": {"face": {"mode": "usb", "camera": "", "format": "mjpeg", "width": 640, "height": 480, "fps": 30}},
+            "pipelines": {"face": {"roi": [150, 120, 345, 301], "roi_square": false, "rotate": 0, "flip": "none"}}
+        })"));
+        auto frame = std::make_shared<PreviewImage>();
+        frame->width = 640;
+        frame->height = 480;
+        frame->seq = 1;
+        frame->pixels.resize(640 * 480);
+        for (int y = 0; y < 480; y++)   // A soft gradient with a dark mouth shape.
+            for (int x = 0; x < 640; x++) {
+                const float dx = (x - 320) / 110.f, dy = (y - 290) / 45.f;
+                frame->pixels[size_t(y) * 640 + x] = uint8_t(dx * dx + dy * dy < 1 ? 40 : 80 + x / 8 + y / 6);
+            }
+        const UsbCamera gc0308{"0c45:6366:1-1", "USB 2.0 Camera", "0c45:6366",
+                               {{"mjpeg", 640, 480, {30}},
+                                {"mjpeg", 320, 240, {120}},
+                                {"mjpeg", 160, 120, {30, 15, 10, 5}},
+                                {"yuyv", 640, 480, {30}},
+                                {"yuyv", 320, 240, {30}},
+                                {"yuyv", 160, 120, {30}}}};
+        Status u = tracking;
+        u.mouth_source = "usb";
+        u.cameras = {gc0308};
+        u.active_camera = gc0308.id;
+        u.usb_stream = {UsbStream::State::Streaming, gc0308.id, "mjpeg", 640, 480, 30, 25, ""};
+        // A new view for each shot that needs the config as it is, without the values that a view sent.
+        std::unique_ptr<DashboardView> v;
+        auto fresh = [&] {
+            v = std::make_unique<DashboardView>();
+            v->load_icons(fonts.parent_path() / "icons");
+            v->load_fonts(fonts);
+            v->set_page(DashboardView::Page::Mouth);
+        };
+        auto set_data = [&](bool preview) { v->set_page_data({cfg, {}, preview ? frame : nullptr}); };
+        fresh();
+        set_data(true);
+        v->render(c, u, choices, std::nullopt);
+        save(c, "mouth_usb_wide");
+        // Drag the top left corner up and left; the bottom right corner stays.
+        v->click({150, 266});
+        v->drag({110, 236});
+        v->render(c, u, choices, std::nullopt);
+        save(c, "mouth_usb_corner_drag");
+        for (const auto &[ptr, v] : v->release({110, 236}).changes)
+            printf("corner drag sends %s = %s\n", ptr.c_str(), v.dump().c_str());
+        // Turn on the square lock, which squares the box around its centre.
+        set_data(true);
+        v->render(c, u, choices, std::nullopt);
+        for (float x = 600; x < 1000; x += 8)
+            if (const auto r = v->click({x, 682}); !r.changes.empty()) {
+                for (const auto &[ptr, v] : r.changes)
+                    printf("square lock sends %s = %s\n", ptr.c_str(), v.dump().c_str());
+                break;
+            }
+        v->render(c, u, choices, std::nullopt);
+        save(c, "mouth_usb_square");
+        // The wide box turned 90 degrees is taller than wide for the model.
+        (*cfg)["pipelines"]["face"]["roi_square"] = false;
+        (*cfg)["pipelines"]["face"]["rotate"] = 90;
+        fresh();
+        set_data(true);
+        v->render(c, u, choices, std::nullopt);
+        save(c, "mouth_usb_rotated");
+        (*cfg)["pipelines"]["face"]["rotate"] = 0;
+        for (const auto &[name, st, err] : {std::tuple<const char *, UsbStream::State, const char *>{
+                                                "mouth_usb_busy", UsbStream::State::Busy, "Device or resource busy"},
+                                            {"mouth_usb_error", UsbStream::State::Error,
+                                             "not enough USB bandwidth for this mode, pick a smaller one"},
+                                            {"mouth_usb_waiting", UsbStream::State::Waiting, ""},
+                                            {"mouth_usb_opening", UsbStream::State::Opening, ""}}) {
+            Status b = u;
+            b.usb_stream = {st, "", "", 0, 0, 0, 0, err};
+            v->render(c, b, choices, std::nullopt);
+            save(c, name);
+        }
+        // The USB source reports Waiting while it is stopped; the feed status says whether tracking is off or paused.
+        for (const auto &[name, tracking, health] : {std::tuple<const char *, bool, Health>{"mouth_usb_tracking_off", false,
+                                                                                             Health::Off},
+                                                     {"mouth_usb_paused", true, Health::Paused}}) {
+            Status b = u;
+            b.usb_stream = {UsbStream::State::Waiting, "", "", 0, 0, 0, 0, ""};
+            b.mouth.available = true;
+            b.mouth.tracking = tracking;
+            b.mouth.health = health;
+            v->render(c, b, choices, std::nullopt);
+            save(c, name);
+        }
+        // The camera page from the Mouth page, and Back.
+        v->render(c, u, choices, std::nullopt);
+        v->click({800, 316});
+        v->render(c, u, choices, std::nullopt);
+        save(c, "mouth_usb_cameras");
+        v->click({60, 70});
+        printf("back from the camera page: %s\n", v->page() == DashboardView::Page::Mouth ? "Mouth" : "other");
+        // The Resolution page, and a pick of 320x240 that scales the crop box.
+        v->render(c, u, choices, std::nullopt);
+        v->click({800, 378});
+        set_data(false);
+        v->render(c, u, choices, Point{1050, 286});
+        save(c, "resolution_gc0308");
+        for (const auto &[ptr, v] : v->click({1090, 286}).changes)
+            printf("320x240 pick sends %s = %s\n", ptr.c_str(), v.dump().c_str());
+        v->render(c, u, choices, std::nullopt);
+        save(c, "resolution_gc0308_picked");
+        // A webcam with HD modes that are too large, on two pages.
+        Status hd = u;
+        hd.cameras = {{"046d:0825:DEMO", "HD Webcam", "046d:0825",
+                       {{"mjpeg", 1920, 1080, {30}, true},
+                        {"mjpeg", 1280, 720, {30}, true},
+                        {"mjpeg", 640, 480, {30, 25, 20, 15, 10, 7.5, 5}},
+                        {"mjpeg", 320, 240, {60, 50, 30, 25, 24, 20, 15, 12, 10, 7.5, 5, 1}},
+                        {"yuyv", 1280, 720, {10}, true},
+                        {"yuyv", 640, 480, {30}},
+                        {"yuyv", 320, 240, {30}},
+                        {"yuyv", 176, 144, {30}},
+                        {"yuyv", 160, 120, {30}}}}};
+        hd.usb_stream.camera = "046d:0825:DEMO";
+        v->render(c, hd, choices, std::nullopt);
+        save(c, "resolution_webcam");
+        v->click({1100, 682});   // Next.
+        v->render(c, hd, choices, std::nullopt);
+        save(c, "resolution_webcam_page2");
+        Status nocam = u;
+        nocam.cameras.clear();
+        v->render(c, nocam, choices, std::nullopt);
+        save(c, "resolution_no_camera");
+        v->click({60, 70});
+        printf("back from the Resolution page: %s\n", v->page() == DashboardView::Page::Mouth ? "Mouth" : "other");
     }
 
     // Measure the render cost for each redraw on the dashboard thread.

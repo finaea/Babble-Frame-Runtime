@@ -25,6 +25,16 @@ class BabbleUsbSource : public ITrackingSource {
 public:
     enum class State { Disabled, Waiting, Streaming, Backoff, Paused };
 
+    // The stream as the Babble tab shows it.
+    struct StreamStatus {
+        enum class State { Waiting, Opening, Streaming, Busy, Error };
+        State state = State::Waiting;
+        bool yuyv = false;
+        uint16_t width = 0, height = 0;
+        double fps_asked = 0, fps_real = 0;   // The negotiated rate and the measured rate.
+        std::string error;
+    };
+
     BabbleUsbSource(const nlohmann::json &cfg, SourceDeps deps);
     ~BabbleUsbSource() override;
 
@@ -39,6 +49,9 @@ public:
     // Returns the camera setting, which is empty for the automatic choice.
     const std::string &camera() const { return camera_; }
     const std::string &active_camera() const { return active_id_; }
+    StreamStatus stream_status() const;
+    // Returns true if key is a USB option (camera, format, width, height or fps) and value is valid for it.
+    static bool valid_option(const std::string &key, const nlohmann::json &value);
     SourceActivity activity() const override;
     const char *state_name() const override;
     const std::string &last_error() const override { return last_error_; }
@@ -48,7 +61,7 @@ private:
     std::optional<usb::Found> pick() const;
     bool start(const usb::Found &dev);
     void stop(const char *why);
-    void run(usb::Found dev);
+    void run(usb::Found dev, std::string format, uint16_t width, uint16_t height, double fps);
 
     std::string name_;
     ThreadSpec thread_spec_;
@@ -60,8 +73,11 @@ private:
     std::string camera_;       // Only the main thread uses this.
     std::string active_id_;    // The main thread sets this on start and clears it on stop.
     uint16_t vendor_ = 0x303a, product_ = 0x8000;
+    // The wanted mode, which only the main thread uses. A change restarts the stream on the next tick.
+    std::string format_ = "auto";
     uint16_t width_ = 240, height_ = 240;
     double fps_ = 30;
+    bool mode_changed_ = false;
 
     std::shared_ptr<FramePool> pool_;
     RateLimiter limiter_;
@@ -71,10 +87,17 @@ private:
     std::atomic<bool> failed_{false};
     std::atomic<bool> opened_{false};   // True after the thread opened the camera.
     std::string thread_error_;   // The thread writes this before it sets failed_.
+    bool thread_busy_ = false;   // The thread writes this before it sets failed_.
+    // The thread writes the negotiated mode before it sets opened_.
+    bool stream_yuyv_ = false;
+    uint16_t stream_width_ = 0, stream_height_ = 0;
+    double stream_fps_ = 0;
+    std::atomic<double> fps_real_{0};
 
     State state_ = State::Disabled;
     uint64_t retry_at_ns_ = 0, backoff_ns_ = 0, backoff_min_ns_, backoff_max_ns_;
     std::string last_error_;
+    bool last_busy_ = false;   // True if the last failure was a camera that another program holds.
     bool logged_waiting_ = false;
 
     RateStat frames_, processed_;

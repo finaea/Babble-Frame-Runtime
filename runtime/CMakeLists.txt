@@ -41,6 +41,7 @@ add_library(babble_core STATIC
     src/camera/url/mjpeg_url_source.cpp
     src/camera/usb/babble_usb_source.cpp
     src/camera/usb/jpeg.cpp
+    src/camera/usb/iso_reader.cpp
     src/camera/usb/usb_device.cpp
     src/camera/usb/uvc.cpp
     src/camera/usb/uvc_camera.cpp
@@ -214,6 +215,7 @@ if(BABBLE_TESTS)
         tests/test_plugin_sink.cpp
         tests/test_link_sink.cpp
         tests/test_babble_tracker.cpp
+        tests/test_usb_camera.cpp
         tests/test_pipeline_base.cpp
         tests/test_log.cpp
         tests/test_vrc_native.cpp
@@ -225,6 +227,7 @@ if(BABBLE_TESTS)
         tests/test_sha256.cpp
         tests/test_capture_apps.cpp
         tests/test_runtime_updater.cpp
+        tests/test_crop_drag.cpp
     )
     if(BABBLE_FRUNK_MOUTH)
         target_sources(babble_tests PRIVATE tests/test_stereo_pairer.cpp)

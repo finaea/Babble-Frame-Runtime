@@ -8,6 +8,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -60,11 +61,32 @@ struct LinkReading {
     bool restart = false;     // True if VRCFaceTracking must restart to claim the tracking that is on.
 };
 
+// A streaming mode of a USB camera, from its descriptors.
+struct UsbMode {
+    std::string format;            // "mjpeg" or "yuyv".
+    uint16_t width = 0, height = 0;
+    std::vector<double> fps;       // The advertised rates, highest first.
+    bool too_large = false;        // True if the frame is larger than the 640x480 frame buffers.
+};
+
 // A USB camera that the mouth can use.
 struct UsbCamera {
     std::string id;       // The value of usb::device_id(), which is also the setting value.
     std::string label;
     std::string detail;   // The USB ID and serial number.
+    std::vector<UsbMode> modes{};   // MJPEG modes first, then YUYV, each group largest first.
+};
+
+// The USB mouth camera as it runs now.
+struct UsbStream {
+    enum class State { None, Waiting, Opening, Streaming, Busy, Error };
+    State state = State::None;     // None if the face source is not in USB mode.
+    std::string camera{};          // The usb::device_id() of the open camera.
+    std::string format{};          // "mjpeg" or "yuyv" while streaming.
+    uint16_t width = 0, height = 0;
+    double fps_asked = 0;          // The negotiated rate.
+    double fps_real = 0;           // The measured rate of frames from the camera.
+    std::string error{};           // The reason for Busy or Error.
 };
 
 // The row on the Diagnostics page for the optional dataset capture app.
@@ -101,6 +123,7 @@ struct Status {
     bool mouth_source_selectable = true;   // False hides the Frunk/USB row because the USB camera is the only mouth.
     std::vector<UsbCamera> cameras{};
     std::string camera{}, active_camera{};
+    UsbStream usb_stream{};
     // The data for the Diagnostics page, where verbose_minutes_left is 0 if verbose logging is off.
     int verbose_minutes_left = 0;
     std::string last_diagnostics{}, log_file{}, stats_file{};
@@ -129,7 +152,7 @@ struct Point {
 class DashboardView {
 public:
     static constexpr int kWidth = 1200, kHeight = 750, kThumb = 128;
-    enum class Page { Home, Settings, Cameras, Diagnostics, Eyes, Squint, Mouth };
+    enum class Page { Home, Settings, Cameras, Diagnostics, Eyes, Squint, Mouth, Resolution };
 
     bool load_fonts(const std::filesystem::path &dir);   // Loads NotoSans-Regular.ttf and NotoSans-Medium.ttf.
     bool load_icons(const std::filesystem::path &dir);   // Loads the optional logo PNG files.
@@ -171,7 +194,7 @@ public:
     Page page() const { return page_; }
     void set_page(Page p) { page_ = p; }
 
-    // The Eyes, Squint and Mouth pages draw live data, which the caller sets before each render.
+    // The Eyes, Squint, Mouth and Resolution pages draw live data, which the caller sets before each render.
     bool live_page() const { return page_ >= Page::Eyes; }
     void set_page_data(PageData d) { fork_.data = std::move(d); }
     // A drag that started with a click on a range handle or the crop box follows the pointer until release.
@@ -219,7 +242,8 @@ private:
     // The pages that the fork adds, in ui/page_*.cpp, and their widgets, in ui/widgets.cpp.
     void render_eyes(Canvas &c, const std::vector<Choice> &choices);
     void render_squint(Canvas &c, const std::vector<Choice> &choices);
-    void render_mouth(Canvas &c);
+    void render_mouth(Canvas &c, const Status &s);
+    void render_resolution(Canvas &c, const Status &s);   // The modes of the USB mouth camera.
     void render_page_buttons(Canvas &c, float right);   // The Eyes, Squint and Mouth buttons on Settings.
     void render_range(Canvas &c, Rect r, const std::string &pointer, const std::string &signal, bool signed_axis,
                       bool dim = false);
