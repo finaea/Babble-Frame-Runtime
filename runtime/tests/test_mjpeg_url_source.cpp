@@ -27,6 +27,11 @@ std::string read_jpeg() {
     return std::string(std::istreambuf_iterator<char>(f), {});
 }
 
+// The JPEG that the marker scan emits: everything up to the first FF D9.
+std::string first_frame(const std::string &jpeg) {
+    return jpeg.substr(0, jpeg.find("\xFF\xD9") + 2);
+}
+
 const std::string kHead = "HTTP/1.0 200 OK\r\nContent-Type: multipart/x-mixed-replace;boundary=frame\r\n\r\n";
 
 std::string part(const std::string &jpeg) {
@@ -186,7 +191,7 @@ TEST_CASE("mjpeg stream parser returns each part byte-identical for any chunking
         CHECK(ok);
         REQUIRE(parts.size() == 3);   // The last part is complete by its Content-Length, so it needs no trailing boundary.
         for (const auto &p : parts)
-            CHECK(p == jpeg);
+            CHECK(p == first_frame(jpeg));
     }
 
     // The split points land inside the header, the part header and across the boundary.
@@ -206,17 +211,63 @@ TEST_CASE("mjpeg stream parser handles a part without Content-Length") {
         CAPTURE(chunk);
         const auto parts = run_parser(stream, chunk);
         REQUIRE(parts.size() == 1);
-        CHECK(parts[0] == jpeg);
+        CHECK(parts[0] == first_frame(jpeg));
     }
 }
 
-TEST_CASE("mjpeg stream parser rejects a non-200 or non-multipart response") {
+TEST_CASE("mjpeg stream parser rejects a non-200 response") {
     bool ok = true;
     run_parser("HTTP/1.0 404 Not Found\r\nContent-Type: text/plain\r\n\r\nnope", 1000, &ok);
     CHECK_FALSE(ok);
-    ok = true;
-    run_parser("HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\n<html></html>", 1000, &ok);
-    CHECK_FALSE(ok);
+}
+
+TEST_CASE("mjpeg stream parser ignores the Content-Type and reads raw concatenated JPEGs") {
+    const std::string jpeg = read_jpeg();
+    const std::string stream = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\njunk" + jpeg + jpeg + "x" + jpeg;
+    for (size_t chunk : {stream.size(), size_t(1), size_t(3)}) {
+        CAPTURE(chunk);
+        bool ok = false;
+        const auto parts = run_parser(stream, chunk, &ok);
+        CHECK(ok);
+        REQUIRE(parts.size() == 3);
+        for (const auto &p : parts)
+            CHECK(p == first_frame(jpeg));
+    }
+}
+
+TEST_CASE("mjpeg stream parser decodes a chunked body") {
+    const std::string jpeg = read_jpeg();
+    std::string body = part(jpeg) + part(jpeg), stream = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n";
+    for (size_t i = 0; i < body.size(); i += 100) {
+        const std::string c = body.substr(i, 100);
+        char len[16];
+        snprintf(len, sizeof(len), "%zx\r\n", c.size());
+        stream += len + c + "\r\n";
+    }
+    for (size_t chunk : {stream.size(), size_t(1), size_t(7)}) {
+        CAPTURE(chunk);
+        const auto parts = run_parser(stream, chunk);
+        REQUIRE(parts.size() == 2);
+        CHECK(parts[0] == first_frame(jpeg));
+        CHECK(parts[1] == first_frame(jpeg));
+    }
+}
+
+TEST_CASE("mjpeg stream parser drops a frame past the size limit and recovers") {
+    const std::string jpeg = read_jpeg();
+    std::vector<std::string> parts;
+    mjpeg::StreamParser p([&](const uint8_t *d, size_t n) { parts.emplace_back(reinterpret_cast<const char *>(d), n); },
+                          jpeg.size() + 16);
+    const std::string stream = kHead + "\xFF\xD8" + std::string(jpeg.size() * 2, 'a') + jpeg;
+    CHECK(p.feed(reinterpret_cast<const uint8_t *>(stream.data()), stream.size()));
+    CHECK(p.dropped() == 1);
+    REQUIRE(parts.size() == 1);
+    CHECK(parts[0] == first_frame(jpeg));
+}
+
+TEST_CASE("mjpeg basic_auth encodes username:password") {
+    CHECK(mjpeg::basic_auth("Aladdin", "open sesame") == "QWxhZGRpbjpvcGVuIHNlc2FtZQ==");
+    CHECK(mjpeg::basic_auth("a", "") == "YTo=");
 }
 
 TEST_CASE("mjpeg source streams from a local server and reconnects after the server drops it") {

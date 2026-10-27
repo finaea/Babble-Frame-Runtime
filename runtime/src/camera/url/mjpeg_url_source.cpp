@@ -30,8 +30,6 @@ namespace {
 constexpr size_t kMaxPixels = 1280 * 960;
 // The longest side that the mono face model's preprocessing takes whole (babble_mono_face.cpp kMaxSide).
 constexpr int kMaxSide = 1280;
-// A part that grows past this without a boundary means that the stream is not MJPEG.
-constexpr size_t kMaxPart = 8 << 20;
 constexpr uint64_t kConnectTimeoutNs = 3'000'000'000ull;
 constexpr uint64_t kStallTimeoutNs = 5'000'000'000ull;
 
@@ -105,6 +103,24 @@ bool parse_url(const std::string &in, Url *out, std::string *err) {
     return true;
 }
 
+std::string basic_auth(const std::string &user, const std::string &password) {
+    static const char *const k = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const std::string in = user + ":" + password;
+    std::string out;
+    for (size_t i = 0; i < in.size(); i += 3) {
+        uint32_t v = uint32_t(uint8_t(in[i])) << 16;
+        if (i + 1 < in.size())
+            v |= uint32_t(uint8_t(in[i + 1])) << 8;
+        if (i + 2 < in.size())
+            v |= uint8_t(in[i + 2]);
+        out += k[(v >> 18) & 63];
+        out += k[(v >> 12) & 63];
+        out += i + 1 < in.size() ? k[(v >> 6) & 63] : '=';
+        out += i + 2 < in.size() ? k[v & 63] : '=';
+    }
+    return out;
+}
+
 bool StreamParser::parse_response(std::string_view head) {
     const size_t eol = head.find('\n');
     const std::string status(head.substr(0, eol));
@@ -112,86 +128,105 @@ bool StreamParser::parse_response(std::string_view head) {
         error_ = "server answered \"" + std::string(status.substr(0, status.find('\r'))) + "\"";
         return false;
     }
-    if (lower(header(head, "transfer-encoding")).find("chunked") != std::string::npos) {
-        error_ = "the server sends a chunked response, which is not supported";
-        return false;
+    chunked_ = lower(header(head, "transfer-encoding")).find("chunked") != std::string::npos;
+    return true;
+}
+
+// The JPEG marker scan: everything outside FF D8 ... FF D9 (boundaries, part headers) is ignored.
+void StreamParser::scan(const uint8_t *data, size_t size) {
+    for (size_t i = 0; i < size; i++) {
+        const uint8_t cur = data[i];
+        if (!in_frame_) {
+            if (prev_ == 0xFF && cur == 0xD8) {
+                frame_.clear();
+                frame_.push_back(0xFF);
+                frame_.push_back(0xD8);
+                in_frame_ = true;
+            }
+        } else if (frame_.size() >= max_frame_) {
+            // A frame without an end within the limit is dropped, and the scan looks for the next start.
+            frame_.clear();
+            in_frame_ = false;
+            dropped_++;
+        } else {
+            frame_.push_back(cur);
+            if (prev_ == 0xFF && cur == 0xD9) {
+                on_part_(frame_.data(), frame_.size());
+                frame_.clear();
+                in_frame_ = false;
+                prev_ = 0;   // The D9 must not pair with a following byte.
+                continue;
+            }
+        }
+        prev_ = cur;
     }
-    const std::string type = header(head, "content-type");
-    const size_t b = lower(type).find("boundary=");
-    if (lower(type).find("multipart/") == std::string::npos || b == std::string::npos) {
-        error_ = "not an MJPEG stream (Content-Type: " + type + ")";
-        return false;
+}
+
+bool StreamParser::body(const uint8_t *data, size_t size) {
+    if (!chunked_) {
+        scan(data, size);
+        return true;
     }
-    std::string boundary = type.substr(b + 9);
-    boundary = boundary.substr(0, boundary.find(';'));
-    if (boundary.size() >= 2 && boundary.front() == '"' && boundary.back() == '"')
-        boundary = boundary.substr(1, boundary.size() - 2);
-    if (boundary.empty()) {
-        error_ = "the stream has an empty boundary";
-        return false;
+    size_t i = 0;
+    while (i < size) {
+        switch (chunk_) {
+        case Chunk::Size: {
+            const uint8_t c = data[i++];
+            if (c != '\n') {
+                chunk_line_ += char(c);
+                if (chunk_line_.size() > 1024) {
+                    error_ = "bad chunk size line";
+                    return false;
+                }
+                break;
+            }
+            char *end = nullptr;
+            chunk_left_ = size_t(std::strtoull(chunk_line_.c_str(), &end, 16));
+            if (end == chunk_line_.c_str()) {
+                error_ = "bad chunk size line";
+                return false;
+            }
+            chunk_line_.clear();
+            if (chunk_left_ == 0) {
+                error_ = "the stream ended";
+                return false;
+            }
+            chunk_ = Chunk::Data;
+            break;
+        }
+        case Chunk::Data: {
+            const size_t n = std::min(chunk_left_, size - i);
+            scan(data + i, n);
+            i += n;
+            chunk_left_ -= n;
+            if (chunk_left_ == 0)
+                chunk_ = Chunk::DataEnd;
+            break;
+        }
+        case Chunk::DataEnd:
+            if (data[i++] == '\n')
+                chunk_ = Chunk::Size;
+            break;
+        }
     }
-    // Some servers put the leading "--" into the header value too.
-    boundary_ = boundary.rfind("--", 0) == 0 ? boundary : "--" + boundary;
     return true;
 }
 
 bool StreamParser::feed(const uint8_t *data, size_t size) {
-    buf_.append(reinterpret_cast<const char *>(data), size);
-    for (;;) {
-        switch (stage_) {
-        case Stage::Response: {
-            const size_t end = buf_.find("\r\n\r\n");
-            if (end == std::string::npos)
-                return buf_.size() < 64 * 1024 || (error_ = "no HTTP response header", false);
-            if (!parse_response(std::string_view(buf_).substr(0, end + 2)))
-                return false;
-            buf_.erase(0, end + 4);
-            stage_ = Stage::Seek;
-            break;
-        }
-        case Stage::Seek: {
-            const size_t at = buf_.find(boundary_);
-            if (at == std::string::npos) {
-                if (buf_.size() > boundary_.size())   // Keep a tail that can hold the start of the boundary.
-                    buf_.erase(0, buf_.size() - boundary_.size());
-                return true;
-            }
-            buf_.erase(0, at + boundary_.size());
-            stage_ = Stage::PartHeaders;
-            break;
-        }
-        case Stage::PartHeaders: {
-            const size_t end = buf_.find("\r\n\r\n");
-            if (end == std::string::npos)
-                return buf_.size() < 64 * 1024 || (error_ = "part header too long", false);
-            const std::string len = header(std::string_view(buf_).substr(0, end + 2), "content-length");
-            body_len_ = len.empty() ? 0 : size_t(std::strtoull(len.c_str(), nullptr, 10));
-            if (body_len_ > kMaxPart) {
-                error_ = "part of " + len + " bytes is too big";
-                return false;
-            }
-            buf_.erase(0, end + 4);
-            stage_ = Stage::Body;
-            break;
-        }
-        case Stage::Body: {
-            size_t n = body_len_;
-            if (n) {
-                if (buf_.size() < n)
-                    return true;
-            } else {
-                // Without a Content-Length, the part ends at the next boundary line.
-                n = buf_.find("\r\n" + boundary_);
-                if (n == std::string::npos)
-                    return buf_.size() < kMaxPart || (error_ = "no boundary in the stream", false);
-            }
-            on_part_(reinterpret_cast<const uint8_t *>(buf_.data()), n);
-            buf_.erase(0, n);
-            stage_ = Stage::Seek;
-            break;
-        }
-        }
+    if (stage_ == Stage::Response) {
+        head_.append(reinterpret_cast<const char *>(data), size);
+        const size_t end = head_.find("\r\n\r\n");
+        if (end == std::string::npos)
+            return head_.size() < 64 * 1024 || (error_ = "no HTTP response header", false);
+        if (!parse_response(std::string_view(head_).substr(0, end + 2)))
+            return false;
+        stage_ = Stage::Body;
+        const std::string rest = head_.substr(end + 4);
+        head_.clear();
+        head_.shrink_to_fit();
+        return body(reinterpret_cast<const uint8_t *>(rest.data()), rest.size());
     }
+    return body(data, size);
 }
 
 }
@@ -207,12 +242,15 @@ MjpegUrlSource::MjpegUrlSource(const nlohmann::json &cfg, SourceDeps deps)
     state_ = cfg.value("enabled", true) ? State::Waiting : State::Disabled;
     if (!mjpeg::parse_url(cfg.value("url", ""), &url_, &url_error_))
         last_error_ = url_error_;
+    if (const std::string user = cfg.value("username", ""); !user.empty())
+        auth_ = mjpeg::basic_auth(user, cfg.value("password", ""));
 
     stats_.add(name_ + ".fps", &frames_);
     stats_.add(name_ + ".process_fps", &processed_);
     stats_.add(name_ + ".restarts", &restarts_);
     stats_.add(name_ + ".pool_exhausted", &pool_exhausted_);
     stats_.add(name_ + ".undecodable", &undecodable_);
+    stats_.add(name_ + ".oversized", &oversized_);
     stats_.add(name_ + ".decode", &decode_time_);
 }
 
@@ -389,9 +427,12 @@ void MjpegUrlSource::run() {
         return fail(waiting + " (" + err + ")", true);
     const int fd = closer.fd;
 
-    // HTTP/1.0 keeps the server from sending a chunked body.
-    const std::string req = "GET " + url_.path + " HTTP/1.0\r\nHost: " + url_.host + ":" + std::to_string(url_.port) +
-                            "\r\nUser-Agent: babble-frame-runtime\r\nAccept: multipart/x-mixed-replace\r\n\r\n";
+    // HTTP/1.0 asks the server not to send a chunked body, though the parser handles one too.
+    std::string req = "GET " + url_.path + " HTTP/1.0\r\nHost: " + url_.host + ":" + std::to_string(url_.port) +
+                      "\r\nUser-Agent: babble-frame-runtime\r\nAccept: */*\r\n";
+    if (!auth_.empty())
+        req += "Authorization: Basic " + auth_ + "\r\n";
+    req += "\r\n";
     if (send(fd, req.data(), req.size(), MSG_NOSIGNAL) != ssize_t(req.size()))
         return fail(waiting + " (" + strerror(errno) + ")", true);
 
@@ -409,9 +450,13 @@ void MjpegUrlSource::run() {
         if (n <= 0)
             return fail(n == 0 ? "the stream at " + url_.text + " ended" : std::string("recv: ") + strerror(errno),
                         !connected_);
-        if (!parser.feed(buf.data(), size_t(n)))
+        const size_t dropped = parser.dropped();
+        const bool ok = parser.feed(buf.data(), size_t(n));
+        for (size_t i = dropped; i < parser.dropped(); i++)
+            oversized_.add();
+        if (!ok)
             return fail(url_.text + ": " + parser.error(), false);
-        if (!connected_ && !parser.boundary().empty()) {
+        if (!connected_ && parser.connected()) {
             connected_ = true;
             LOG.info("%s: streaming %s", name_.c_str(), url_.text.c_str());
         }
