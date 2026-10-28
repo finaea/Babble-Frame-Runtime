@@ -52,6 +52,8 @@ add_library(babble_core STATIC
     src/model/null_model_runner.cpp
     src/model/preprocess.cpp
     src/model/image_ops.cpp
+    src/model/image_tap.cpp
+    src/model/tilt_warp.cpp
     src/model/executorch_runner.cpp
     src/model/pipeline.cpp
     src/model/null_pipeline.cpp
@@ -100,6 +102,7 @@ add_library(babble_core STATIC
     src/ui/page_eyes.cpp
     src/ui/page_squint.cpp
     src/ui/page_mouth.cpp
+    src/ui/page_mouth_image.cpp
 )
 if(BABBLE_FRUNK_MOUTH)
     # Add the code for the stereo mouth cameras of the Frame, which only dev builds use.
@@ -202,6 +205,7 @@ if(BABBLE_TESTS)
         tests/test_mjpeg_url_source.cpp
         tests/test_sinks.cpp
         tests/test_image_ops.cpp
+        tests/test_tilt_warp.cpp
         tests/test_executorch_runner.cpp
         tests/test_eye_kit.cpp
         tests/test_postprocess.cpp

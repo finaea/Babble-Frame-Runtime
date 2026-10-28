@@ -1,6 +1,8 @@
 // Renders the pages of the debug dashboard to PNG with synthetic readings and without SteamVR.
 #include "ui/dashboard_view.h"
 
+#include "model/tilt_warp.h"
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-function"
 #pragma GCC diagnostic ignored "-Wmissing-field-initializers"
@@ -301,7 +303,7 @@ int main(int argc, char **argv) {
                 frame->pixels[size_t(y) * 240 + x] = uint8_t(dx * dx + dy * dy < 1 ? 40 : 90 + x / 3 + y / 4);
             }
         auto data = [&](std::map<std::string, LiveSignal> extra, bool preview = false) {
-            PageData d{cfg, live, preview ? frame : nullptr};
+            PageData d{cfg, live, preview ? frame : nullptr, nullptr};
             for (auto &[k, v] : extra)
                 d.signals[k] = v;
             return d;
@@ -361,6 +363,38 @@ int main(int argc, char **argv) {
         view.set_page_data(data({}));
         view.render(c, tracking, fork_choices, std::nullopt);
         save(c, "mouth_camera_waiting");
+        // The Image tab, with the crop of the demo frame tilted 20 degrees as the model input.
+        (*cfg)["pipelines"]["face"]["tilt_deg"] = 20;
+        (*cfg)["pipelines"]["face"]["gain"] = 1.4;
+        Status fork_mouth = tracking;   // A dev build shows the fork's Mouth page only for the USB source.
+        fork_mouth.mouth_source = "usb";
+        view.set_page_data(data({}));
+        view.render(c, fork_mouth, fork_choices, std::nullopt);
+        view.click({920, 76});
+        view.render(c, fork_mouth, fork_choices, std::nullopt);
+        save(c, "mouth_image_waiting");
+        auto model_in = std::make_shared<PreviewImage>();
+        model_in->width = model_in->height = 224;
+        model_in->seq = 1;
+        model_in->pixels.resize(224 * 224);
+        img::tilt_resize({frame->pixels.data() + 30 * 240 + 40, 160, 160, 240}, {model_in->pixels.data(), 224, 224, 224},
+                         20);
+        {
+            PageData d = data({});
+            d.model_view = model_in;
+            view.set_page_data(d);
+        }
+        view.render(c, fork_mouth, fork_choices, std::nullopt);
+        save(c, "mouth_image");
+        // Drag the tilt knob to the left end, and show it before the release.
+        view.click({600, 470});
+        view.drag({500, 470});
+        view.render(c, fork_mouth, fork_choices, std::nullopt);
+        save(c, "mouth_image_tilt_drag");
+        for (const auto &[ptr, v] : view.release({500, 470}).changes)
+            printf("tilt drag sends %s = %s\n", ptr.c_str(), v.dump().c_str());
+        (*cfg)["pipelines"]["face"].erase("tilt_deg");
+        (*cfg)["pipelines"]["face"].erase("gain");
         view.click({1060, 76});   // The Shapes tab.
         view.render(c, tracking, fork_choices, std::nullopt);
         save(c, "mouth_shapes_jaw");
@@ -378,7 +412,7 @@ int main(int argc, char **argv) {
 
         // The PC app mode: Baballonia on the PC sends the mouth, so there is no preview.
         (*cfg)["sources"]["face"]["mode"] = "pc";
-        view.click({920, 76});   // The Camera tab.
+        view.click({760, 76});   // The Camera tab.
         view.set_page_data(data({}, true));
         view.render(c, tracking, fork_choices, std::nullopt);
         save(c, "mouth_camera_pc_app");
@@ -421,7 +455,7 @@ int main(int argc, char **argv) {
             v->load_fonts(fonts);
             v->set_page(DashboardView::Page::Mouth);
         };
-        auto set_data = [&](bool preview) { v->set_page_data({cfg, {}, preview ? frame : nullptr}); };
+        auto set_data = [&](bool preview) { v->set_page_data({cfg, {}, preview ? frame : nullptr, nullptr}); };
         fresh();
         set_data(true);
         v->render(c, u, choices, std::nullopt);

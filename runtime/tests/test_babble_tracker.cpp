@@ -9,6 +9,7 @@
 #include "model/babble_mono_face.h"
 #include "model/executorch_runner.h"
 #include "model/half.h"
+#include "model/image_ops.h"
 #include "model/postprocess/face_post.h"
 #include "state/expression_state.h"
 
@@ -542,4 +543,99 @@ TEST_CASE("the mono face pipeline skips its own rotate and flip in USB mode") {
     CHECK(input(*turned) == turn_in);
     CHECK_FALSE(turned->set_option("source_mode", 5));
     CHECK(input(*turned) == turn_in);   // A refused value changes nothing.
+}
+
+TEST_CASE("the mono face pipeline: tilt 0 is the old resize, gain and tilt change live") {
+    const nlohmann::json threads = nlohmann::json::object();
+    ExpressionState state;
+    StatsRegistry stats;
+    LatestSlot<StereoFrame> slot;
+    auto make = [&](nlohmann::json cfg) {
+        cfg["from"] = "face";
+        cfg["model"] = "face_mono_224_fp16.pte";
+        PipelineDeps deps{"face", threads, [&](const std::string &s) { return s == "face" ? &slot : nullptr; }, state,
+                          stats, {}, BABBLE_MODELS_DIR};
+        auto p = std::make_unique<BabbleMonoFace>(cfg, std::move(deps));
+        REQUIRE(p->init());
+        return p;
+    };
+
+    std::vector<uint8_t> px(240 * 240);
+    for (int y = 0; y < 240; y++)
+        for (int x = 0; x < 240; x++)
+            px[size_t(y) * 240 + size_t(x)] = uint8_t((x * 5 + y * 3) % 200);
+    Frame f;
+    f.width = f.height = f.stride = 240;
+    f.data = px.data();
+    f.size = px.size();
+    std::vector<float> in(224 * 224);
+
+    SUBCASE("tilt 0, absent or explicit, gives the exact floats of resize_linear") {
+        std::vector<uint8_t> small(224 * 224);
+        img::resize_linear({px.data(), 240, 240, 240}, {small.data(), 224, 224, 224});
+        std::vector<float> want(small.size());
+        for (size_t i = 0; i < small.size(); i++)
+            want[i] = float(small[i]) / 255.0f;
+        for (const auto &cfg : {nlohmann::json::object(), nlohmann::json{{"tilt_deg", 0}}}) {
+            make(cfg)->prepare(f, in.data());
+            CHECK(in == want);   // Bit for bit.
+        }
+    }
+
+    SUBCASE("gain is live: it doubles the pixels, saturates, and bad values keep the old gain") {
+        std::fill(px.begin(), px.end(), uint8_t(100));
+        auto p = make({});
+        p->prepare(f, in.data());
+        CHECK(in[1000] == doctest::Approx(100.0f / 255.0f));
+        REQUIRE(p->set_option("gain", 2.0));
+        p->prepare(f, in.data());
+        CHECK(in[1000] == doctest::Approx(200.0f / 255.0f));
+        REQUIRE(p->set_option("gain", 3.0));
+        p->prepare(f, in.data());
+        CHECK(in[1000] == 1.0f);   // 300 saturates at 255.
+        REQUIRE(p->set_option("gain", 2.0));
+        for (const nlohmann::json bad : {nlohmann::json(0), nlohmann::json(-1), nlohmann::json(11), nlohmann::json("x")})
+            CHECK_FALSE(p->set_option("gain", bad));
+        p->prepare(f, in.data());
+        CHECK(in[1000] == doctest::Approx(200.0f / 255.0f));   // Still 2.
+    }
+
+    SUBCASE("tilt_deg is live: 30 changes the input, 46 is rejected and keeps the tilt") {
+        auto p = make({});
+        p->prepare(f, in.data());
+        const auto flat = in;
+        REQUIRE(p->set_option("tilt_deg", 30));
+        p->prepare(f, in.data());
+        const auto tilted = in;
+        CHECK(tilted != flat);
+        CHECK_FALSE(p->set_option("tilt_deg", 46));
+        CHECK_FALSE(p->set_option("tilt_deg", -46));
+        CHECK_FALSE(p->set_option("tilt_deg", "x"));
+        p->prepare(f, in.data());
+        CHECK(in == tilted);
+        REQUIRE(p->set_option("tilt_deg", 0));
+        p->prepare(f, in.data());
+        CHECK(in == flat);
+    }
+
+    SUBCASE("the config tilt is clamped to 45 at init") {
+        auto big = make({{"tilt_deg", 80}});
+        auto edge = make({{"tilt_deg", 45}});
+        std::vector<float> a(224 * 224), b(224 * 224);
+        big->prepare(f, a.data());
+        edge->prepare(f, b.data());
+        CHECK(a == b);
+    }
+
+    SUBCASE("the model view gets the 224x224 input only while open") {
+        auto p = make({});
+        p->prepare(f, in.data());
+        CHECK(p->model_view().latest() == nullptr);
+        p->model_view().set_open(true);
+        p->prepare(f, in.data());
+        auto got = p->model_view().latest();
+        REQUIRE(got);
+        CHECK(got->width == 224);
+        CHECK(got->height == 224);
+    }
 }

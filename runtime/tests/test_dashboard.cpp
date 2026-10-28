@@ -850,3 +850,65 @@ TEST_CASE("the Mouth page turns the USB camera, not the model, and the other mod
     CHECK(r.changes[0].first == "/pipelines/face/rotate");
     CHECK(r.changes[0].second == 270);
 }
+
+TEST_CASE("the Image tab: slider drag sends the tilt, Reset sends only what differs") {
+    Canvas c(DashboardView::kWidth, DashboardView::kHeight);
+    Status s{true, Worn::Yes, on(Health::Working, 120), on(Health::Working, 90)};
+    s.mouth_source = "usb";   // The fork's Mouth page shows for the USB source.
+    // A sent value is remembered for a moment, so each check opens its own view.
+    auto open = [&](DashboardView &view, nlohmann::json face) {
+        REQUIRE(view.load_fonts(kFonts));
+        PageData d;
+        d.config = std::make_shared<const nlohmann::json>(nlohmann::json{{"pipelines", {{"face", std::move(face)}}}});
+        view.set_page_data(std::move(d));
+        view.set_page(DashboardView::Page::Mouth);
+        view.render(c, s, {}, std::nullopt);
+        CHECK_FALSE(view.mouth_image_tab());
+        view.click({920, 76});   // The Image tab.
+        view.render(c, s, {}, std::nullopt);
+        REQUIRE(view.mouth_image_tab());
+    };
+
+    // Dragging the Tilt knob to the far left sends the lowest tilt on release.
+    DashboardView drag;
+    open(drag, {{"gain", 1.4}, {"tilt_deg", 20}});
+    drag.click({600, 470});
+    drag.drag({400, 470});
+    auto r = drag.release({400, 470});
+    REQUIRE(r.changes.size() == 1);
+    CHECK(r.changes[0].first == "/pipelines/face/tilt_deg");
+    CHECK(r.changes[0].second == -45);
+
+    // Reset is the button at the bottom right; find it by what a click sends.
+    Point reset{};
+    {
+        DashboardView probe;
+        open(probe, {{"gain", 1.4}, {"tilt_deg", 20}});
+        for (float y = 630; y <= 670 && reset.x == 0; y += 6)
+            for (float x = 1090; x <= 1144; x += 6)
+                if (!probe.click({x, y}).changes.empty()) {
+                    reset = {x, y};
+                    break;
+                }
+    }
+    REQUIRE(reset.x != 0);
+
+    DashboardView both;
+    open(both, {{"gain", 1.4}, {"tilt_deg", 20}});
+    r = both.click(reset);
+    REQUIRE(r.changes.size() == 2);
+    CHECK(r.changes[0].first == "/pipelines/face/gain");
+    CHECK(r.changes[0].second == 1.0);
+    CHECK(r.changes[1].first == "/pipelines/face/tilt_deg");
+    CHECK(r.changes[1].second == 0);
+
+    // Only the value that differs is sent, and nothing when both are at the default.
+    DashboardView one;
+    open(one, {{"gain", 1.0}, {"tilt_deg", 20}});
+    r = one.click(reset);
+    REQUIRE(r.changes.size() == 1);
+    CHECK(r.changes[0].first == "/pipelines/face/tilt_deg");
+    DashboardView none;
+    open(none, {{"gain", 1.0}, {"tilt_deg", 0}});
+    CHECK(none.click(reset).changes.empty());
+}

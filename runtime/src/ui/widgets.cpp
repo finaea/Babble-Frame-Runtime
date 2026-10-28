@@ -233,6 +233,20 @@ void DashboardView::click_fork(const Hit &h, ClickResult &out, Point p) {
         const float dm = std::fabs(v - d.min), dx = std::fabs(v - d.max);
         d.handle = dm < dx ? 0 : dx < dm ? 1 : v > d.max ? 1 : 0;
         drag(p);
+    } else if (a.starts_with("slider:")) {
+        DragState &d = fork_.drag;
+        d = {};
+        d.kind = DragState::Kind::Slider;
+        d.pointer = a.substr(7);
+        d.track = {h.data["x0"].get<float>(), 0, h.data["x1"].get<float>() - h.data["x0"].get<float>(), 0};
+        d.lo = h.data["lo"];
+        d.hi = h.data["hi"];
+        d.step = h.data["step"];
+        drag(p);
+    } else if (a == "image:reset") {
+        for (const json &item : h.data)
+            if (setting(item[0].get<std::string>(), item[1]) != item[1])
+                send(out, item[0].get<std::string>(), item[1]);
     } else if (a == "crop:move" || a == "crop:corner") {
         DragState &d = fork_.drag;
         d = {};
@@ -291,6 +305,11 @@ bool DashboardView::drag(Point p) {
             d.max = std::max(v, d.min + kMinGap);
         return true;
     }
+    if (d.kind == DragState::Kind::Slider) {
+        const float v = d.lo + std::clamp((p.x - d.track.x) / d.track.w, 0.f, 1.f) * (d.hi - d.lo);
+        d.min = std::clamp(std::round(v / d.step) * d.step, d.lo, d.hi);
+        return true;
+    }
     if (d.kind == DragState::Kind::CropMove) {
         d.view = drag_move({d.bx, d.by, d.bw, d.bh}, (p.x - d.px) / d.scale, (p.y - d.py) / d.scale, d.img_w, d.img_h);
         return true;
@@ -314,6 +333,11 @@ DashboardView::ClickResult DashboardView::release(Point p) {
         ManualRange::parse(setting(d.pointer, json::array({d.lo, d.hi})), &r);
         const json v = json::array({round2(d.min), round2(d.max)});
         if (v[0].get<float>() < v[1].get<float>() && v != json::array({round2(r.min), round2(r.max)}))
+            send(out, d.pointer, v);
+    } else if (d.kind == DragState::Kind::Slider) {
+        const json old = setting(d.pointer, json());
+        const json v = round2(d.min);
+        if (!old.is_number() || std::fabs(old.get<float>() - d.min) > 1e-4f)
             send(out, d.pointer, v);
     } else if (d.view.w > 0) {   // The crop box moved; view holds it in the preview's pixels, so map it back.
         const Rect r = d.tf.box_to_source(d.view);

@@ -18,6 +18,7 @@
 
 namespace babble {
 
+class ImageTap;
 class SteamVrClient;
 
 namespace ui {
@@ -38,6 +39,7 @@ public:
         // calls it only while the camera options page shows.
         std::function<bool(CameraPreview &)> preview;
         FramePreviewSink *frame_preview = nullptr;   // The face frames for the fork's Mouth page, or null for none.
+        ImageTap *model_view = nullptr;   // The mouth model input for the Image tab of the Mouth page, or null for none.
     };
     ~Dashboard();
 

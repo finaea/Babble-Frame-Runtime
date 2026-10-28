@@ -26,6 +26,7 @@ struct PageData {
     std::shared_ptr<const nlohmann::json> config;   // The current config, or null if the runtime sent none.
     std::map<std::string, LiveSignal> signals;      // Every signal that has a value, by name.
     std::shared_ptr<const PreviewImage> preview;    // The newest face frame while the Mouth page is open.
+    std::shared_ptr<const PreviewImage> model_view;   // The newest mouth model input while the Image tab is open.
 };
 
 // The Mouth preview shows the face frame flipped and rotated as the model sees it (BabbleMonoFace::prepare: flip h,
@@ -91,13 +92,15 @@ inline Rect turn_crop(Rect box, float w, float h, CameraTurn a, CameraTurn b) {
 
 // What a laser drag on these pages moves.
 struct DragState {
-    enum class Kind { None, Range, CropMove, CropCorner } kind = Kind::None;
-    // For Range: the setting, the track, the value domain and the handle (0 min, 1 max).
+    enum class Kind { None, Range, CropMove, CropCorner, Slider } kind = Kind::None;
+    // For Range: the setting, the track, the value domain and the handle (0 min, 1 max). A Slider uses the same
+    // fields for its one value, which is min, rounded to step on release.
     std::string pointer;
     Rect track;
     float lo = 0, hi = 1;
     int handle = 0;
     float min = 0, max = 1;
+    float step = 0.01f;
     // For the crop box, all in the preview's (flipped and rotated) pixels: the box, the scale in canvas pixels per
     // pixel, the image size, the box at the start of the drag, and the pointer at the start. tf maps them back to
     // source pixels. corner is 0 top left, 1 top right, 2 bottom left, 3 bottom right; the opposite corner stays.
@@ -142,7 +145,7 @@ struct ForkPages {
     // Values that this view sent and that the config does not show yet, with the time of the change.
     std::map<std::string, std::pair<nlohmann::json, uint64_t>> pending;
     int eyes_tab = 0;      // 0 eyelids, 1 gaze.
-    int mouth_tab = 0;     // 0 camera, 1 shapes.
+    int mouth_tab = 0;     // 0 camera, 1 image, 2 shapes.
     int shape_group = 0;   // jaw, mouth, cheek, nose, tongue.
     int shape_page = 0;
     int mode_page = 0;   // The page of the Resolution list.

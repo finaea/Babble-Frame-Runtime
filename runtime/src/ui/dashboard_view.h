@@ -270,6 +270,8 @@ public:
         return page_ == Page::Eyes || page_ == Page::Squint || page_ == Page::Mouth || page_ == Page::Resolution;
     }
     void set_page_data(PageData d) { fork_.data = std::move(d); }
+    // The Image tab of the Mouth page shows the model input, which the runtime copies only while this is true.
+    bool mouth_image_tab() const { return page_ == Page::Mouth && fork_.mouth_tab == 1; }
     // A drag that started with a click on a range handle or the crop box follows the pointer until release.
     bool dragging() const { return fork_.drag.kind != DragState::Kind::None; }
     bool drag(Point p);   // Returns true if the drawing changed.
@@ -339,6 +341,11 @@ private:
     void render_squint(Canvas &c, const std::vector<Choice> &choices);
     void render_mouth(Canvas &c, const Status &s);
     void render_resolution(Canvas &c, const Status &s);   // The modes of the USB mouth camera.
+    void render_mouth_image(Canvas &c);   // The Image tab: brightness, tilt and the model input.
+    // Draws a one-handle slider for the number at pointer, from lo to hi in steps of step, and its value in format.
+    // neutral is the value when the setting is missing, and the slider fills from it.
+    void render_slider(Canvas &c, Rect r, const std::string &pointer, float lo, float hi, float step, float neutral,
+                       const char *format);
     // Returns true if the camera has no saved mode, or the source defaults that the Auto row saves.
     bool automatic_mode(const UsbCamera &cam) const;
     // Returns the turn and flips of the camera, with any that this view just sent.

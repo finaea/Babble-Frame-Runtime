@@ -17,6 +17,7 @@
 #include "core/metrics.h"
 #include "core/paths.h"
 #include "core/threading.h"
+#include "model/babble_mono_face.h"
 #include "model/executorch_runner.h"
 #include "model/pipeline.h"
 #include "platform/app_launcher.h"
@@ -739,6 +740,9 @@ int main(int argc, char **argv) {
             for (auto &k : sinks)   // The fork's Mouth page shows the frames of the preview sink.
                 if (auto *p = dynamic_cast<FramePreviewSink *>(k.sink.get()))
                     o.frame_preview = p;
+            for (auto &p : pipelines)   // Its Image tab shows the input of the mouth model.
+                if (auto *f = dynamic_cast<BabbleMonoFace *>(p.get()))
+                    o.model_view = &f->model_view();
             dashboard->set_config(cfg);
             o.preview = [&usb_source, cache = std::make_shared<BabbleUsbSource::Preview>()](ui::CameraPreview &out) {
                 BabbleUsbSource *usb = usb_source();

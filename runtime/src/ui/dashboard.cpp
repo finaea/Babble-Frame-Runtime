@@ -2,6 +2,7 @@
 
 #include "core/clock.h"
 #include "core/log.h"
+#include "model/image_tap.h"
 #include "platform/steamvr_client.h"
 
 #include <openvr.h>
@@ -56,6 +57,8 @@ void Dashboard::stop() {
     view_.set_page(DashboardView::Page::Home);
     if (options_.frame_preview)
         options_.frame_preview->set_open(false);
+    if (options_.model_view)
+        options_.model_view->set_open(false);
 }
 
 void Dashboard::release_gpu() { gpu_.release(); }
@@ -287,6 +290,8 @@ PageData Dashboard::read_page_data() {
     }
     if (options_.frame_preview && view_.page() == DashboardView::Page::Mouth)
         d.preview = options_.frame_preview->latest();
+    if (options_.model_view && view_.mouth_image_tab())
+        d.model_view = options_.model_view->latest();
     return d;
 }
 
@@ -486,6 +491,8 @@ void Dashboard::run() {
         }
         if (options_.frame_preview)
             options_.frame_preview->set_open(visible_ && view_.page() == DashboardView::Page::Mouth);
+        if (options_.model_view)
+            options_.model_view->set_open(visible_ && view_.mouth_image_tab());
         if (keyboard_for)
             open_keyboard(*keyboard_for);
 

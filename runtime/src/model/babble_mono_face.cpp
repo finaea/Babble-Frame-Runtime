@@ -5,6 +5,7 @@
 #include "model/half.h"
 #include "model/image_ops.h"
 #include "model/postprocess/manual_range.h"
+#include "model/tilt_warp.h"
 
 #include <algorithm>
 #include <cmath>
@@ -19,6 +20,7 @@ namespace {
 
 constexpr uint32_t kSize = 224;
 constexpr size_t kMaxSide = 1920;   // This is the largest image side, in pixels, that prepare() uses (USB frames go up to 1920x1080).
+constexpr float kMaxTilt = 45;      // The tilt is for a mount that is not square to the face; the Rotate buttons do the rest.
 
 bool is_float(DType t) { return t == DType::F32 || t == DType::F16; }
 
@@ -32,6 +34,7 @@ bool BabbleMonoFace::init() {
     if (roi.is_array() && roi.size() == 4)
         roi_ = {roi[0].get<uint32_t>(), roi[1].get<uint32_t>(), roi[2].get<uint32_t>(), roi[3].get<uint32_t>()};
     gain_ = cfg_.value("gain", 1.0f);
+    tilt_deg_ = std::clamp(cfg_.value("tilt_deg", 0.0f), -kMaxTilt, kMaxTilt);
     const int rot = cfg_.value("rotate", 0);
     if (rot != 0 && rot != 90 && rot != 180 && rot != 270) {
         LOG.error("pipeline %s: rotate must be 0/90/180/270, got %d", name_.c_str(), rot);
@@ -83,12 +86,12 @@ bool BabbleMonoFace::init() {
     input_.resize(kSize * kSize);
     out_.resize(face::kShapes.size());
     values_.resize(face::kShapes.size());
-    LOG.info("pipeline %s: mono face model on %s (%s, roi %s, rotate %d, flip %s, gain %.2f, calibration %s)",
+    LOG.info("pipeline %s: mono face model on %s (%s, roi %s, rotate %d, flip %s, gain %.2f, tilt %.1f, calibration %s)",
              name_.c_str(), source_.c_str(), in[0].dtype == DType::F16 ? "fp16" : "fp32",
              roi_.w ? (std::to_string(roi_.x) + "," + std::to_string(roi_.y) + " " + std::to_string(roi_.w) + "x" +
                        std::to_string(roi_.h)).c_str()
                     : "full",
-             rot, flip.c_str(), gain_, cal.value("mode", "auto").c_str());
+             rot, flip.c_str(), gain_, tilt_deg_, cal.value("mode", "auto").c_str());
     return true;
 }
 
@@ -163,6 +166,20 @@ bool BabbleMonoFace::set_option(const std::string &key, const nlohmann::json &va
         LOG.info("pipeline %s: flip %s", name_.c_str(), flip.c_str());
         return true;
     }
+    if (key == "gain") {
+        if (!value.is_number() || !(value.get<double>() > 0 && value.get<double>() <= 10))
+            return false;
+        gain_ = value.get<float>();
+        LOG.info("pipeline %s: gain %.2f", name_.c_str(), gain_);
+        return true;
+    }
+    if (key == "tilt_deg") {
+        if (!value.is_number() || std::fabs(value.get<double>()) > kMaxTilt)
+            return false;
+        tilt_deg_ = value.get<float>();
+        LOG.info("pipeline %s: tilt %.1f", name_.c_str(), tilt_deg_);
+        return true;
+    }
     return false;
 }
 
@@ -209,7 +226,11 @@ void BabbleMonoFace::prepare(const Frame &f, float *input) {
         cur = rotated;
     }
     img::Mut small{small_.data(), kSize, kSize, kSize};
-    img::resize_linear(cur, small);
+    if (tilt_deg_ != 0)
+        img::tilt_resize(cur, small, tilt_deg_);
+    else
+        img::resize_linear(cur, small);
+    model_view_.offer(small);
     for (size_t i = 0; i < small_.size(); i++)
         input[i] = float(small_[i]) / 255.0f;
 }

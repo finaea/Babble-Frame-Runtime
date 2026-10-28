@@ -126,7 +126,11 @@ constexpr int kModeRows = 8;   // Rows on one page of the Resolution list, with 
 void DashboardView::render_mouth(Canvas &c, const Status &s) {
     const float W = float(c.width());
     render_back(c, "Mouth");
-    render_tabs(c, W - kMargin, {"Camera", "Shapes"}, fork_.mouth_tab, "tab:mouth");
+    render_tabs(c, W - kMargin, {"Camera", "Image", "Shapes"}, fork_.mouth_tab, "tab:mouth");
+    if (fork_.mouth_tab == 1) {
+        render_mouth_image(c);
+        return;
+    }
 
     if (fork_.mouth_tab == 0) {
         // The preview, flipped and rotated as the model sees it, with the crop box (stored in source pixels).
