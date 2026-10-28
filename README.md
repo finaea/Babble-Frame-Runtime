@@ -12,34 +12,37 @@ so a problem in the runtime never affects SteamVR.
 
 ## About this fork
 
-This is a fork of [Project-Babble/Babble-Frame-Runtime](https://github.com/Project-Babble/Babble-Frame-Runtime). It keeps
-Babble's models and output, and adds:
+This is a fork of [Project-Babble/Babble-Frame-Runtime](https://github.com/Project-Babble/Babble-Frame-Runtime), currently
+based on Babble's V1.2 Release. It keeps Babble's models and outputs, and adds:
 
 - **Squint** from eyecam's live engine (sasaken1102r/frameeyeosc, MIT, in `third_party/eyecam`), run on the runtime's
   own eye frames, with eyecam's guided squint calibration on the Babble tab. An existing `~/.config/eyecam/calib.json`
   is imported on first start.
-- **Gaze smoothing** from frameeyeosc (One Euro filter, deadzone, gaze held while the eyes are shut). It can be turned
-  off for Valve's raw gaze.
+- **Gaze smoothing** from frameeyeosc (One Euro filter, deadzone, gaze held while the eyes are shut), in four levels:
+  Off (Valve's raw gaze), Low (the default), Medium and High.
 - **Blink hold**, off by default: keeps a short blink closed long enough for other players to see it.
 - **Manual calibration** in the Baballonia style (a minimum and a maximum per value) for eyelids, widen, squint, pupils,
   gaze and the 45 mouth shapes. The eyes keep the runtime's automatic calibration underneath; the mouth uses the manual
   ranges by default.
-- **Any generic usb mouth camera or MJPEG-over-HTTP stream**: Add supports for standard UVC camera (bulk or isochronous)
-  or MJPEG-over-HTTP from any streamer, at the dedicated Mouth tab. Include options to set resolution/fps, crops
-  or vertical/horizontal flip. (Tested against GC0308 cam only, Vive FT, Serial ESP32 boards and Desktop cams (like
-  Logitech) may not be supported yet. Use http stream option instead.)
-- **ESP32 serial boards** (Babble's `babble_wrooms_s3_usb` firmware, such as the ventiFBT mouth tracker, USB
-  `303a:1001`) plugged into the headset show up in the same USB camera list, read over raw USB as in acutevr's bridge.
-  **Untested on hardware.**
+- **Any USB webcam as the mouth camera:** supports any standard UVC cameras, bulk or isochronous, in MJPEG, YUY2, UYVY, NV12 or
+  grey, with a resolution and frame rate picker (tested working with a GC0308 and Logitech C615 webcam).
+- **Any MJPEG stream over HTTP as the mouth camera:** supports Stream URL mode that reads any stream that carries JPEG frames, multipart or plain
+  back-to-back JPEGs, chunked or not. If a stream requires a login that takes `username` and `password`, they can be configured under
+  `sources.face` in `settings.json` (Stream parsing and login contributed by [grzesjam](https://github.com/grzesjam)).
+- **Brightness and tilt** on the Mouth page's Image tab: brightness for a camera that is too dark or too bright, and a
+  tilt of up to 45° either way for a camera that isn't square to the face. The tab shows exactly what the mouth model
+  sees.
+- **ESP32 serial boards:** Supports ETVR serial firmware (such as `babble_wrooms_s3_usb` on the ventiFBT mouth tracker,
+  USB `303a:1001`) for mouth tracking by reading over raw USB. **Untested**
 - **Mouth from Baballonia on the PC:** set Camera to PC App on the Mouth page. The runtime then opens no mouth camera
   and runs no mouth model, but with Mouth Tracking on it still tells the VRCFaceTracking module to claim face tracking,
   so the module takes the mouth from Baballonia and the eyes from the headset.
 
 Updates come from this fork's releases. Its versions keep Babble's format, so the build and the updater accept them,
 with the release number in its own range: the hundreds are the Babble release it is based on, the last two digits the
-fork's build. V1.0 Release 101 is the first fork build on Babble's V1.0 Release, and V1.0 Release 201 would be the first
-on a Babble V1.0 Release 2. Official Babble releases never reach these numbers, and a fork release always counts as
-newer than the Babble release it is based on.
+fork's build. V1.2 Release 101 is the first fork build on Babble's V1.2 Release, and V1.2 Release 201 would be the
+first on a Babble V1.2 Release 2. Official Babble releases never reach these numbers, and a fork release always counts
+as newer than the Babble release it is based on.
 
 ## Features
 
