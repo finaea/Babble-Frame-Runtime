@@ -4,11 +4,8 @@
 		"mouthTracking" : true,
 		"mouthSource" : "frunk",
 		"mouthRate" : 120,
-		"output" : "vrcft",
 		"eyeTracking" : true,
 		"eyeRateDivisor" : 1,
-		"opennessSource" : "model",
-		"gazeSource" : "independent",
-		"debugOverlay" : false
+		"debugOverlay" : true
 	}
 }

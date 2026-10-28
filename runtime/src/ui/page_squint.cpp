@@ -101,7 +101,7 @@ void DashboardView::render_squint(Canvas &c, const std::vector<Choice> &choices)
         row("Last Run", detail, st == 3 ? kGreen : kRed)(W - kMargin);
     }
     for (size_t i = 0; i < choices.size(); i++)
-        if (choices[i].page == "squint") {
+        if (choices[i].page == ChoicePage::Squint) {
             render_choice_row(c, y, kRow, i, choices[i]);
             y += kRow;
         }

@@ -46,12 +46,6 @@ void DashboardView::send(ClickResult &out, const std::string &pointer, json valu
     out.redraw = true;
 }
 
-void DashboardView::render_page_buttons(Canvas &c, float right) {
-    for (const auto &[label, action] : {std::pair<const char *, const char *>{"Mouth", "page:mouth"},
-                                        {"Squint", "page:squint"}, {"Eyes", "page:eyes"}})
-        right = render_small_button(c, right, 42, label, action).x - 16;
-}
-
 Rect DashboardView::render_small_button(Canvas &c, float right, float y, const std::string &text,
                                         const std::string &action, bool primary) {
     const Rect r = render_button(c, right, y, text, primary);
@@ -93,7 +87,7 @@ float DashboardView::render_value_segments(Canvas &c, float right, float y, cons
                      seg.y + (seg.h + medium_.cap_height(px)) / 2, labels[k], px, on ? kText : kMuted);
         Hit h{Hit::Fork, seg};
         h.text = "set:" + pointer;
-        h.json = values[k];
+        h.data = values[k];
         hits_.push_back(h);
     }
     return ctl.x;
@@ -128,11 +122,11 @@ void DashboardView::render_range(Canvas &c, Rect r, const std::string &pointer, 
     }
     Hit h{Hit::Fork, r};
     h.text = "range:" + pointer;
-    h.json = {{"x0", x0}, {"x1", x1}, {"lo", lo}, {"hi", hi}};
+    h.data = {{"x0", x0}, {"x1", x1}, {"lo", lo}, {"hi", hi}};
     hits_.push_back(h);
 }
 
-void DashboardView::render_text_field(Canvas &c, Rect r, const std::string &action, const std::string &text,
+void DashboardView::render_text_field(Canvas &c, Rect r, const std::string &id, const std::string &text,
                                       const std::string &placeholder) {
     c.fill_rect(r, hovered(r) ? kCardHover : kBg, 4);
     c.stroke_rect(r, hovered(r) ? kText : kMuted, 4, 2);
@@ -142,9 +136,8 @@ void DashboardView::render_text_field(Canvas &c, Rect r, const std::string &acti
     const std::string &shown = text.empty() ? placeholder : text;
     regular_.draw(c, r.x + 18, r.y + (r.h + regular_.cap_height(24)) / 2, fit(regular_, shown, 24, ex - r.x - 40), 24,
                   text.empty() ? kMuted : kText);
-    Hit h{Hit::Fork, r};
-    h.text = action;
-    h.json = text;
+    Hit h{Hit::EditText, r};   // Upstream's keyboard flow, which sends the typed text to the setting.
+    h.text = id;
     hits_.push_back(h);
 }
 
@@ -206,10 +199,10 @@ void DashboardView::click_fork(const Hit &h, ClickResult &out, Point p) {
     } else if (a == "shapes:prev" || a == "shapes:next") {
         fork_.shape_page = std::max(0, fork_.shape_page + (a == "shapes:next" ? 1 : -1));
     } else if (a.starts_with("set:")) {
-        send(out, a.substr(4), h.json);
+        send(out, a.substr(4), h.data);
     } else if (a == "reset:min" || a == "reset:max") {
         // Each item is [pointer, lo, hi], and the other end of the range stays.
-        for (const json &item : h.json) {
+        for (const json &item : h.data) {
             const std::string ptr = item[0];
             const float lo = item[1], hi = item[2];
             ManualRange r{lo, hi};
@@ -218,8 +211,6 @@ void DashboardView::click_fork(const Hit &h, ClickResult &out, Point p) {
             if (v != json::array({r.min, r.max}))
                 send(out, ptr, v);
         }
-    } else if (a == "keyboard") {
-        out.keyboard = h.json.get<std::string>();
     } else if (a == "squint:start") {
         // A new positive token starts the routine; the wall-clock milliseconds never repeat, even after a restart.
         send(out, "/sinks/squint/calibrate", int64_t(wall_ns() / 1'000'000ull));
@@ -230,9 +221,9 @@ void DashboardView::click_fork(const Hit &h, ClickResult &out, Point p) {
         d = {};
         d.kind = DragState::Kind::Range;
         d.pointer = a.substr(6);
-        d.track = {h.json["x0"].get<float>(), 0, h.json["x1"].get<float>() - h.json["x0"].get<float>(), 0};
-        d.lo = h.json["lo"];
-        d.hi = h.json["hi"];
+        d.track = {h.data["x0"].get<float>(), 0, h.data["x1"].get<float>() - h.data["x0"].get<float>(), 0};
+        d.lo = h.data["lo"];
+        d.hi = h.data["hi"];
         ManualRange r{d.lo, d.hi};
         ManualRange::parse(setting(d.pointer, json::array({d.lo, d.hi})), &r);
         d.min = r.min;
@@ -247,21 +238,21 @@ void DashboardView::click_fork(const Hit &h, ClickResult &out, Point p) {
         d = {};
         d.kind = a == "crop:move" ? DragState::Kind::CropMove : DragState::Kind::CropCorner;
         d.corner = int(h.value);
-        d.scale = h.json["scale"];
-        d.img_w = h.json["w"];
-        d.img_h = h.json["h"];
-        d.bx = h.json["bx"];
-        d.by = h.json["by"];
-        d.bw = h.json["bw"];
-        d.bh = h.json["bh"];
-        d.square = h.json["sq"];
+        d.scale = h.data["scale"];
+        d.img_w = h.data["w"];
+        d.img_h = h.data["h"];
+        d.bx = h.data["bx"];
+        d.by = h.data["by"];
+        d.bw = h.data["bw"];
+        d.bh = h.data["bh"];
+        d.square = h.data["sq"];
         d.px = p.x;
         d.py = p.y;
-        d.tf.w = h.json["sw"];
-        d.tf.h = h.json["sh"];
-        d.tf.q = h.json["q"];
-        d.tf.fh = h.json["fh"];
-        d.tf.fv = h.json["fv"];
+        d.tf.w = h.data["sw"];
+        d.tf.h = h.data["sh"];
+        d.tf.q = h.data["q"];
+        d.tf.fh = h.data["fh"];
+        d.tf.fv = h.data["fv"];
     } else if (a == "crop:whole") {
         send(out, "/pipelines/face/roi", json::array());
     } else if (a == "crop:square") {
@@ -277,7 +268,6 @@ void DashboardView::click_fork(const Hit &h, ClickResult &out, Point p) {
         }
     } else if (a == "open:cameras") {
         page_ = Page::Cameras;
-        fork_.cameras_from_mouth = true;
         out.refresh_cameras = true;   // Show the cameras that are connected now.
     } else if (a == "open:modes") {
         page_ = Page::Resolution;
@@ -286,7 +276,7 @@ void DashboardView::click_fork(const Hit &h, ClickResult &out, Point p) {
         fork_.mode_page = std::max(0, fork_.mode_page + (a == "modes:next" ? 1 : -1));
     } else if (a == "mode") {
         // The items are [pointer, value] and go out in one click, so the camera restarts once.
-        for (const json &item : h.json)
+        for (const json &item : h.data)
             send(out, item[0].get<std::string>(), item[1]);
     }
 }

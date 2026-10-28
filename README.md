@@ -62,8 +62,12 @@ On the Steam Frame, switch to Desktop Mode, open Konsole and paste:
 curl -fsSL https://raw.githubusercontent.com/finaea/Babble-Frame-Runtime/main/tools/get.sh | BABBLE_REPO=finaea/Babble-Frame-Runtime bash
 ```
 
-It downloads the newest release, checks it against the release's SHA-256 checksum, installs it in your home folder and restarts SteamVR. Its settings are in SteamVR Settings, under Expression Tracking; turn on Show App Window there for the Babble tab in the SteamVR dashboard, where updates appear next to the version.
+It downloads the newest release, checks it against the release's SHA-256 checksum, installs it in your home folder and restarts SteamVR. Its settings are in SteamVR Settings, under Expression Tracking. The Babble tab in the SteamVR dashboard is on after you install, and updates appear there next to the version. To hide the tab, turn off Show App Window.
 To uninstall, run `~/.local/share/babble-frame-runtime/uninstall.sh`.
+
+## VRCFT Module
+
+Until further notice, this [VRCFT Module](https://cdn.discordapp.com/attachments/1279163592440283240/1561139947597992016/VRCFaceTracking.Baballonia.zip?ex=6ade7ee0&is=6add2d60&hm=92b516967feec073c70adf231a947d09ca4caf820d78a6a73157607361b80b13&) is required 
 
 ## Building from source
 
@@ -75,9 +79,9 @@ To uninstall, run `~/.local/share/babble-frame-runtime/uninstall.sh`.
 
 ## Build profiles
 
-`-DBABBLE_PROFILE=release` (what releases ship) builds the USB camera or a stream URL as the mouth and VRCFaceTracking as
-the only output; it leaves out the Frame's front-port mouth cameras and their camera arbiter, the VRChat-native output,
-the visualizer launcher, the camera-stream switch and the unused models. The default, `dev`, builds everything including unfinished features. 
+`-DBABBLE_PROFILE=release` (what releases ship) builds the USB camera or a stream URL as the mouth; it leaves out the
+Frame's front-port mouth cameras and their camera arbiter, the visualizer launcher, the camera-stream switch and the
+unused models. Every profile has all three outputs: VRCFaceTracking, VRChat Native and Babble OSC. The default, `dev`, builds everything including unfinished features. 
 ## License
 
 Licensed under the [GNU General Public License v3.0](LICENSE). Third-party code in `third_party/` keeps its own license.

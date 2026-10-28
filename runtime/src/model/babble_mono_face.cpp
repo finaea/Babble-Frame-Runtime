@@ -18,7 +18,7 @@ namespace babble {
 namespace {
 
 constexpr uint32_t kSize = 224;
-constexpr size_t kMaxSide = 1280;   // This is the largest image side, in pixels, that prepare() uses (stream URL frames go up to 1280x960).
+constexpr size_t kMaxSide = 1920;   // This is the largest image side, in pixels, that prepare() uses (USB frames go up to 1920x1080).
 
 bool is_float(DType t) { return t == DType::F32 || t == DType::F16; }
 
@@ -79,8 +79,6 @@ bool BabbleMonoFace::init() {
         pre_ids_[i] = deps_.state.add_signal(std::string("_") + face::kShapes[i] + "Pre");
     }
 
-    tmp_a_.resize(kMaxSide * kMaxSide);
-    tmp_b_.resize(kMaxSide * kMaxSide);
     small_.resize(kSize * kSize);
     input_.resize(kSize * kSize);
     out_.resize(face::kShapes.size());
@@ -169,6 +167,11 @@ void BabbleMonoFace::prepare(const Frame &f, float *input) {
     const uint32_t w = std::min<uint32_t>(cur.width, kMaxSide), h = std::min<uint32_t>(cur.height, kMaxSide);
     cur.width = w;
     cur.height = h;
+    // The USB source already applies the rotation and flips of each camera, so these are for special setups.
+    if ((gain_ != 1.0f || flip_h_ || flip_v_ || quarter_turns_) && tmp_a_.size() < size_t(w) * h) {
+        tmp_a_.resize(size_t(w) * h);
+        tmp_b_.resize(size_t(w) * h);
+    }
 
     if (gain_ != 1.0f) {   // The gain saturates and rounds as the OpenCV convertTo does.
         for (uint32_t y = 0; y < h; y++)
@@ -237,8 +240,8 @@ void BabbleMonoFace::process(const StereoFrame &sf) {
         half_out_.resize(os.elements());
         out = half_out_.data();
     }
-    std::vector<TensorView> iv{{in, &is}};
-    std::vector<TensorView> ov{{out, &os}};
+    TensorView iv[] = {{in, &is}};
+    TensorView ov[] = {{out, &os}};
     if (!runner_->run(iv, ov))
         return;
     if (os.dtype == DType::F16)

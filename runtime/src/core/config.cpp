@@ -4,7 +4,9 @@
 #include "core/paths.h"
 #include "defaults_json.h"
 
+#include <algorithm>
 #include <fstream>
+#include <optional>
 #include <sstream>
 
 namespace {
@@ -40,7 +42,7 @@ const char *kind(const json &j) {
 }
 
 // These options can have more than one type, for example "ipd" can be "auto" or a value in metres.
-bool flexible(const std::string &key) { return key == "ipd" || key == "one_euro" || key == "pupil_one_euro"; }
+bool flexible(const std::string &key) { return key == "ipd" || key == "one_euro" || key == "pupil_one_euro_mm"; }
 
 void fix_types_at(json &cfg, const json &defaults, const std::string &path, std::vector<std::string> &fixed) {
     for (auto it = defaults.begin(); it != defaults.end(); ++it) {
@@ -111,6 +113,63 @@ Layer merge_layer(const std::filesystem::path &file, json &config, std::string *
 
 }
 
+std::string migrate_output_choice(json &config, const std::vector<const json *> &layers) {
+    std::string old;
+    for (const json *layer : layers)
+        if (layer->is_object() && layer->contains("output") && (*layer)["output"].is_string())
+            old = (*layer)["output"].get<std::string>();
+    if (old.empty())
+        return "";
+    if (config.contains("outputs") && config["outputs"].is_object())
+        for (auto &[id, on] : config["outputs"].items())
+            if (std::none_of(layers.begin(), layers.end(), [&](const json *l) { return section(*l, "outputs").contains(id); }))
+                on = id == old;
+    config.erase("output");
+    return old;
+}
+
+bool migrate_face_mirror(json &config, const std::vector<const json *> &layers) {
+    std::optional<bool> mirror;
+    bool flip_set = false;
+    for (const json *layer : layers) {
+        const json &face = section(section(*layer, "pipelines"), "face");
+        if (face.contains("mirror") && face["mirror"].is_boolean())
+            mirror = face["mirror"].get<bool>();
+        flip_set |= section(section(*layer, "sources"), "face").contains("tracker_flip_h");
+    }
+    if (config.contains("pipelines") && config["pipelines"].contains("face") && config["pipelines"]["face"].is_object())
+        config["pipelines"]["face"].erase("mirror");
+    if (!mirror || flip_set)
+        return false;
+    config["sources"]["face"]["tracker_flip_h"] = *mirror;
+    return true;
+}
+
+bool migrate_gaze_smoothing(json &config, const std::vector<const json *> &layers) {
+    std::optional<int> level;
+    for (const json *layer : layers) {
+        const json &gaze = section(section(*layer, "pipelines"), "gaze");
+        const json on = gaze.value("smoothing", json()), strength = gaze.value("smoothing_strength", json());
+        if (on.is_number())
+            level = on.get<int>();
+        else if (on.is_boolean() && !on.get<bool>())
+            level = 0;
+        else if (strength.is_number())
+            level = strength.get<int>();
+        else if (on.is_boolean())
+            level = 1;   // The fork's default strength.
+    }
+    if (!config.contains("pipelines") || !config["pipelines"].contains("gaze") || !config["pipelines"]["gaze"].is_object())
+        return false;
+    json &gaze = config["pipelines"]["gaze"];
+    const bool old = gaze.contains("smoothing_strength") || gaze.value("smoothing", json()).is_boolean();
+    gaze.erase("smoothing_strength");
+    if (!old || !level)
+        return false;
+    gaze["smoothing"] = std::clamp(*level, 0, 3);
+    return true;
+}
+
 std::filesystem::path default_settings_file() { return paths::config_dir() / "settings.json"; }
 
 bool save_setting(const std::filesystem::path &settings_file, const json::json_pointer &where, const json &value,
@@ -169,13 +228,17 @@ ConfigLoad load_config(const std::optional<std::filesystem::path> &user_file_ove
     }
 
     out.user_file = user_file_override ? *user_file_override : paths::config_dir() / "config.json";
-    out.user_loaded = merge_layer(out.user_file, out.config, &out.error) == Layer::Loaded;
+    json user_layer;
+    out.user_loaded = merge_layer(out.user_file, out.config, &out.error, &user_layer) == Layer::Loaded;
     out.settings_file = settings_file_override ? *settings_file_override : default_settings_file();
     json settings_layer;
     out.settings_loaded =
         merge_layer(out.settings_file, out.config, &out.settings_error, &settings_layer) == Layer::Loaded;
     if (out.settings_loaded)
         leaves(settings_layer, "", out.settings_overrides);
+    out.legacy_output = migrate_output_choice(out.config, {&user_layer, &settings_layer});
+    migrate_face_mirror(out.config, {&user_layer, &settings_layer});
+    migrate_gaze_smoothing(out.config, {&user_layer, &settings_layer});
     if (defaults)
         out.type_fixes = fix_types(out.config, *defaults);
     return out;

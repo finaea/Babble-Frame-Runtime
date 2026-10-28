@@ -100,11 +100,24 @@ bool FaceCameraSource::set_option(const std::string &key, const nlohmann::json &
         }
         return true;
     }
-    // The USB options also apply after a later change back to the USB mode.
-    if (BabbleUsbSource::valid_option(key, value)) {
-        cfg_[key] = value;
-        if (auto *u = usb())
-            u->set_option(key, value);
+    // The USB options (the camera choice and each camera's settings) also apply after a later change back to USB.
+    if (key == "camera" || key.starts_with("cameras/")) {
+        if (auto *u = usb(); u && !u->set_option(key, value))
+            return false;
+        try {
+            if (key == "camera") {
+                cfg_[key] = value;
+            } else {
+                const nlohmann::json::json_pointer ptr("/" + key);
+                if (value.is_object() && cfg_.contains(ptr) && cfg_[ptr].is_object())
+                    cfg_[ptr].update(value);   // The USB source also merges a whole entry into the saved one.
+                else
+                    cfg_[ptr] = value;
+            }
+        } catch (const nlohmann::json::exception &e) {
+            LOG.warn("%s: ignoring %s: %s", deps_.name.c_str(), key.c_str(), e.what());
+            return false;
+        }
         return true;
     }
     return inner_->set_option(key, value);

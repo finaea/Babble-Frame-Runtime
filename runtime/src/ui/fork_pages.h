@@ -123,8 +123,7 @@ struct ForkPages {
     int mouth_tab = 0;     // 0 camera, 1 shapes.
     int shape_group = 0;   // jaw, mouth, cheek, nose, tongue.
     int shape_page = 0;
-    int mode_page = 0;                 // The page of the Resolution list.
-    bool cameras_from_mouth = false;   // Back on the camera page returns to the Mouth page.
+    int mode_page = 0;   // The page of the Resolution list.
 };
 
 }

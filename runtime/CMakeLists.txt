@@ -41,7 +41,6 @@ add_library(babble_core STATIC
     src/camera/url/mjpeg_url_source.cpp
     src/camera/usb/babble_usb_source.cpp
     src/camera/usb/jpeg.cpp
-    src/camera/usb/iso_reader.cpp
     src/camera/usb/usb_device.cpp
     src/camera/usb/uvc.cpp
     src/camera/usb/uvc_camera.cpp
@@ -57,6 +56,7 @@ add_library(babble_core STATIC
     src/model/pipeline.cpp
     src/model/null_pipeline.cpp
     src/model/babble_eye.cpp
+    src/model/eye_kit.cpp
     src/model/babble_mono_face.cpp
     src/model/postprocess/face_post.cpp
     src/model/postprocess/one_euro.cpp
@@ -72,6 +72,8 @@ add_library(babble_core STATIC
     src/sink/link_sink.cpp
     src/sink/plugin_sink.cpp
     src/sink/vrc_native_sink.cpp
+    src/sink/babble_osc_sink.cpp
+    src/sink/steam_link.cpp
     src/sink/camera_stream_sink.cpp
     src/sink/record_sink.cpp
     src/sink/eyecam_squint_sink.cpp
@@ -155,6 +157,7 @@ target_link_libraries(babble_runtime PRIVATE babble_core)
 set_target_properties(babble_runtime PROPERTIES OUTPUT_NAME babble-runtime
     BUILD_RPATH "${THIRD_PARTY}/openvr/lib/linuxarm64" INSTALL_RPATH "$ORIGIN")
 target_link_options(babble_runtime PRIVATE "-Wl,-rpath,$ORIGIN"
+    $<$<CONFIG:Release>:-Wl,--strip-all>
     -rdynamic)   # This option puts function names in crash backtraces.
 if(NOT BABBLE_ASAN)
     # Link libstdc++ statically because the binary must not use the libstdc++ of the OS.
@@ -171,11 +174,6 @@ target_compile_definitions(dashboard_preview PRIVATE BABBLE_RESOURCES_DIR="${CMA
 add_executable(model_bench tools/model_bench.cpp)
 target_link_libraries(model_bench PRIVATE babble_core)
 set_target_properties(model_bench PROPERTIES BUILD_RPATH "${THIRD_PARTY}/openvr/lib/linuxarm64")
-
-# This tool runs an eye model on recorded frames from stdin.
-add_executable(eye_replay tools/eye_replay.cpp)
-target_link_libraries(eye_replay PRIVATE babble_core)
-set_target_properties(eye_replay PROPERTIES BUILD_RPATH "${THIRD_PARTY}/openvr/lib/linuxarm64")
 
 # This tool replays a BFR eye dump through the eyecam_squint sink's engine path.
 add_executable(squint_replay tools/squint_replay.cpp)
@@ -205,6 +203,7 @@ if(BABBLE_TESTS)
         tests/test_sinks.cpp
         tests/test_image_ops.cpp
         tests/test_executorch_runner.cpp
+        tests/test_eye_kit.cpp
         tests/test_postprocess.cpp
         tests/test_gaze.cpp
         tests/test_gaze_filter.cpp
@@ -219,6 +218,7 @@ if(BABBLE_TESTS)
         tests/test_pipeline_base.cpp
         tests/test_log.cpp
         tests/test_vrc_native.cpp
+        tests/test_steam_link.cpp
         tests/test_camera_stream.cpp
         tests/test_eye_pairing.cpp
         tests/test_record_sink.cpp

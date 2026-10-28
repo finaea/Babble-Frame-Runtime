@@ -50,13 +50,30 @@ std::string upper(std::string s) {
 
 int number(const json &v, int fallback) { return v.is_number() ? int(std::lround(v.get<double>())) : fallback; }
 
-// Returns the wanted mode as the Resolution row shows it, such as "Auto" or "640×480 · 30 fps · MJPEG".
-std::string mode_label(const json &format, const json &width, const json &height, const json &fps) {
-    if (!format.is_string() || format == "auto")
+// Returns the camera in use: the streaming one, else the selected one, else the active one, else the first.
+const UsbCamera *camera_in_use(const Status &s) {
+    auto find = [&](const std::string &id) -> const UsbCamera * {
+        for (const UsbCamera &u : s.cameras)
+            if (!id.empty() && u.id == id)
+                return &u;
+        return nullptr;
+    };
+    const UsbCamera *cam = s.usb_stream.state == UsbStream::State::Streaming ? find(s.usb_stream.camera) : nullptr;
+    for (const std::string *id : {&s.camera, &s.active_camera})
+        if (!cam)
+            cam = find(*id);
+    if (!cam && !s.cameras.empty())
+        cam = &s.cameras.front();
+    return cam;
+}
+
+// Returns the mode as the Resolution row shows it, such as "Auto" or "640×480 · 30 fps · MJPEG".
+std::string mode_label(const UsbCamera *cam, bool automatic) {
+    if (!cam || automatic || !cam->settings.width)
         return "Auto";
     char buf[64];
-    snprintf(buf, sizeof(buf), "%d×%d  ·  %d fps  ·  %s", number(width, 240), number(height, 240), number(fps, 30),
-             upper(format.get<std::string>()).c_str());
+    snprintf(buf, sizeof(buf), "%d×%d  ·  %d fps  ·  %s", cam->settings.width, cam->settings.height,
+             cam->settings.fps, upper(cam->settings.format).c_str());
     return buf;
 }
 
@@ -100,23 +117,6 @@ std::vector<std::string> wrap(const Font &f, const std::string &text, float px, 
         }
     }
     return lines;
-}
-
-// Returns the frame size that the runtime picks for a wanted mode (the contract's pick rule), or 0 x 0 if none fits.
-std::pair<int, int> picked_size(const std::vector<UsbMode> &modes, const std::string &format, int w, int h) {
-    for (const char *f : {"mjpeg", "yuyv"})
-        for (const UsbMode &m : modes)
-            if (m.width == w && m.height == h && !m.too_large && m.format == f && (format == "auto" || format == f))
-                return {w, h};
-    for (const char *f : {"mjpeg", "yuyv"}) {
-        std::pair<int, int> best{0, 0};
-        for (const UsbMode &m : modes)
-            if (m.format == f && !m.too_large && m.width * m.height > best.first * best.second)
-                best = {m.width, m.height};
-        if (best.first)
-            return best;
-    }
-    return {0, 0};
 }
 
 constexpr int kModeRows = 8;   // Rows on one page of the Resolution list, with Auto.
@@ -200,12 +200,12 @@ void DashboardView::render_mouth(Canvas &c, const Status &s) {
                 Hit corner{Hit::Fork, {cx - hs / 2, cy - hs / 2, hs, hs}};
                 corner.text = "crop:corner";
                 corner.value = k;
-                corner.json = geo;
+                corner.data = geo;
                 hits_.push_back(corner);
             }
             Hit move{Hit::Fork, box};
             move.text = "crop:move";
-            move.json = geo;
+            move.data = geo;
             hits_.push_back(move);
             // The size and the ratio as the model sees them, after rotate and flip; it stretches any box to a square.
             const long vw = std::lround(vb.w), vh = std::lround(vb.h);
@@ -275,10 +275,8 @@ void DashboardView::render_mouth(Canvas &c, const Status &s) {
                 hits_.push_back(h);
             };
             link_row(y + 10, "USB camera", camera_label(s), "open:cameras");
-            link_row(y + 72, "Resolution",
-                     mode_label(setting("/sources/face/format", "auto"), setting("/sources/face/width", 240),
-                                setting("/sources/face/height", 240), setting("/sources/face/fps", 30)),
-                     "open:modes");
+            const UsbCamera *cam = camera_in_use(s);
+            link_row(y + 72, "Resolution", mode_label(cam, cam && automatic_mode(*cam)), "open:modes");
             const UsbStream &us = s.usb_stream;
             std::string line;
             Color col = kMuted;
@@ -309,7 +307,7 @@ void DashboardView::render_mouth(Canvas &c, const Status &s) {
             card(132, "Stream URL", "", 0);
             if (!url_mode)
                 regular_.draw(c, x + 200, y + 44, "Used when Camera is Stream URL.", 20, kMuted);
-            render_text_field(c, {x + 20, y + 62, cw - 40, 56}, "keyboard", url, "http://127.0.0.1:8082/");
+            render_text_field(c, {x + 20, y + 62, cw - 40, 56}, "/sources/face/url", url, "http://127.0.0.1:8082/");
             y += 132;
         }
         card(88, "Rotate", "", 0);
@@ -385,53 +383,50 @@ void DashboardView::render_mouth(Canvas &c, const Status &s) {
         right = render_small_button(c, right - tw - 12, kBottomY, "Previous", "shapes:prev").x - 28;
     }
     right = render_small_button(c, right, kBottomY, "Reset Maximums", "reset:max").x - 12;
-    hits_.back().json = reset;
+    hits_.back().data = reset;
     render_small_button(c, right, kBottomY, "Reset Minimums", "reset:min");
-    hits_.back().json = reset;
+    hits_.back().data = reset;
 }
 
-// The Resolution page: Auto, then a row for each format and size of the camera in use, with its rates.
+bool DashboardView::automatic_mode(const UsbCamera &cam) const {
+    // Auto is a camera with no saved format, or the source defaults that Auto saves.
+    const json entry = setting(camera_setting_id(cam.id), json());
+    if (!entry.is_object() || !entry.contains("format"))
+        return true;
+    const json fps = setting("/sources/face/fps", 30);
+    return entry["format"] == "mjpeg" && entry.value("width", 0) == number(setting("/sources/face/width", 240), 240) &&
+           entry.value("height", 0) == number(setting("/sources/face/height", 240), 240) &&
+           std::fabs(entry.value("fps", 0.0) - (fps.is_number() ? fps.get<double>() : 30.0)) < 0.5;
+}
+
+// The Resolution page: Auto, then a row for each format and size of the camera in use, with its rates. A pick saves
+// the whole settings entry of that camera, as upstream's Camera Options page does.
 void DashboardView::render_resolution(Canvas &c, const Status &s) {
     const float W = float(c.width());
     render_back(c, "Resolution");
-
-    // The camera in use: the streaming one, else the selected one, else the active one, else the first.
-    const UsbCamera *cam = nullptr;
-    auto find = [&](const std::string &id) -> const UsbCamera * {
-        for (const UsbCamera &u : s.cameras)
-            if (!id.empty() && u.id == id)
-                return &u;
-        return nullptr;
-    };
-    if (s.usb_stream.state == UsbStream::State::Streaming)
-        cam = find(s.usb_stream.camera);
-    for (const std::string *id : {&s.camera, &s.active_camera})
-        if (!cam)
-            cam = find(*id);
-    if (!cam && !s.cameras.empty())
-        cam = &s.cameras.front();
+    const UsbCamera *cam = camera_in_use(s);
     if (cam) {
         const std::string label = fit(regular_, cam->label, 22, 520);
         regular_.draw(c, W - kMargin - regular_.measure(label, 22), 84, label, 22, kMuted);
     }
+    const bool automatic = cam && automatic_mode(*cam);
 
-    const json fmt_v = setting("/sources/face/format", "auto");
-    const std::string fmt = fmt_v.is_string() ? fmt_v.get<std::string>() : "auto";
-    const int cur_w = number(setting("/sources/face/width", 240), 240), cur_h = number(setting("/sources/face/height", 240), 240);
-    const json fps_v = setting("/sources/face/fps", 30);
-    const double cur_fps = fps_v.is_number() ? fps_v.get<double>() : 30;
-
-    // A pick sends the mode in one click, with the crop box scaled to the new frame if the frame size changes.
+    // A pick sends the camera settings and, if the frame size changes, the crop box scaled to the new frame.
     const json roi = setting("/pipelines/face/roi", json::array());
     const json sq = setting("/pipelines/face/roi_square", true);
     const bool square = !sq.is_boolean() || sq.get<bool>();
-    auto batch = [&](const std::string &f, int w, int h, double fps) {
-        json b = json::array({json::array({"/sources/face/format", f}), json::array({"/sources/face/width", w}),
-                              json::array({"/sources/face/height", h}), json::array({"/sources/face/fps", fps})});
-        const int sw = s.usb_stream.width, sh = s.usb_stream.height;
-        const auto [nw, nh] = cam ? picked_size(cam->modes, f, w, h) : std::pair<int, int>{0, 0};
+    auto batch = [&](const UsbCamera::Settings &next, int nw, int nh) {
+        json b = json::array({json::array({camera_setting_id(cam->id),
+                                           {{"format", next.format}, {"width", next.width}, {"height", next.height},
+                                            {"fps", next.fps}, {"rotate", next.rotate}, {"flip_h", next.flip_h},
+                                            {"flip_v", next.flip_v}}})});
+        int sw = s.usb_stream.width, sh = s.usb_stream.height;
+        if (cam->settings.rotate % 180 == 90) {   // The crop box is in the turned frame.
+            std::swap(sw, sh);
+            std::swap(nw, nh);
+        }
         if (!(roi.is_array() && roi.size() == 4 && roi[2].is_number() && roi[3].is_number()) || sw <= 0 || sh <= 0 ||
-            nw <= 0 || (nw == sw && nh == sh))
+            nw <= 0 || nh <= 0 || (nw == sw && nh == sh))
             return b;
         double rw = std::min(roi[2].get<double>() * nw / sw, double(nw));
         double rh = std::min(roi[3].get<double>() * nh / sh, double(nh));
@@ -455,69 +450,100 @@ void DashboardView::render_resolution(Canvas &c, const Status &s) {
         c.line(box.x + 26, box.y + box.h / 2, box.x + 38, box.y + box.h / 2 + 12, 5, kAccent);
         c.line(box.x + 38, box.y + box.h / 2 + 12, box.x + 60, box.y + box.h / 2 - 14, 5, kAccent);
     };
+    // One row for each format and size, in the order that the camera lists them.
+    struct Row {
+        const UsbCamera::Format *format;
+        const UsbCamera::Size *size;
+    };
+    std::vector<Row> rows;
+    if (cam)
+        for (const auto &f : cam->formats)
+            for (const auto &z : f.sizes)
+                rows.push_back({&f, &z});
     const float row_h = 60, tx = kMargin + 84;
     float y = 140;
-    const std::vector<UsbMode> none;
-    const std::vector<UsbMode> &modes = cam ? cam->modes : none;
-    const int pages = std::max(1, int((modes.size() + kModeRows) / kModeRows));   // Auto takes the first row.
+    const int pages = std::max(1, int((rows.size() + kModeRows) / kModeRows));   // Auto takes the first row.
     fork_.mode_page = std::min(fork_.mode_page, pages - 1);
     if (fork_.mode_page == 0) {
         const Rect box{kMargin, y, W - 2 * kMargin, row_h - 8};
-        const bool on = fmt == "auto";
-        c.fill_rect(box, on || hovered(box) ? kCardHover : kCard, 6);
-        if (on)
+        c.fill_rect(box, automatic || hovered(box) ? kCardHover : kCard, 6);
+        if (automatic)
             check(box);
         medium_.draw(c, tx, box.y + box.h / 2 + medium_.cap_height(26) / 2, "Auto", 26, kText);
         const char *hint = "The runtime picks a mode.";
         regular_.draw(c, box.x + box.w - 24 - regular_.measure(hint, 21), box.y + box.h / 2 + regular_.cap_height(21) / 2,
                       hint, 21, kMuted);
-        Hit h{Hit::Fork, box};
-        h.text = "mode";
-        h.json = batch("auto", 240, 240, 30);
-        hits_.push_back(h);
+        if (cam) {
+            // Auto saves the source defaults, which the camera streams as its nearest MJPEG size (or of its first
+            // format if it has no MJPEG), as uvc::pick_mode does.
+            UsbCamera::Settings next = cam->settings;
+            next.format = "mjpeg";
+            next.width = number(setting("/sources/face/width", 240), 240);
+            next.height = number(setting("/sources/face/height", 240), 240);
+            next.fps = number(setting("/sources/face/fps", 30), 30);
+            const UsbCamera::Format *f = cam->formats.empty() ? nullptr : &cam->formats.front();
+            for (const auto &k : cam->formats)
+                if (k.key == "mjpeg")
+                    f = &k;
+            int nw = 0, nh = 0;
+            if (f)
+                for (const auto &z : f->sizes)
+                    if (!nw || std::abs(z.width - next.width) + std::abs(z.height - next.height) <
+                                   std::abs(nw - next.width) + std::abs(nh - next.height)) {
+                        nw = z.width;
+                        nh = z.height;
+                    }
+            Hit h{Hit::Fork, box};
+            h.text = "mode";
+            h.data = batch(next, nw, nh);
+            hits_.push_back(h);
+        }
         y += row_h;
     }
     const size_t first = fork_.mode_page == 0 ? 0 : size_t(fork_.mode_page * kModeRows - 1);
-    for (size_t i = first; i < modes.size() && y + row_h <= 140 + kModeRows * row_h; i++) {
-        const UsbMode &m = modes[i];
+    for (size_t i = first; i < rows.size() && y + row_h <= 140 + kModeRows * row_h; i++) {
+        const UsbCamera::Format &f = *rows[i].format;
+        const UsbCamera::Size &z = *rows[i].size;
         const Rect box{kMargin, y, W - 2 * kMargin, row_h - 8};
-        const bool on = fmt == m.format && cur_w == m.width && cur_h == m.height;
+        const bool on = !automatic && cam->settings.format == f.key && cam->settings.width == z.width &&
+                        cam->settings.height == z.height;
         c.fill_rect(box, on ? kCardHover : kCard, 6);
         if (on)
             check(box);
         const float base = box.y + box.h / 2 + medium_.cap_height(26) / 2;
         char buf[48];
-        snprintf(buf, sizeof(buf), "%u × %u", unsigned(m.width), unsigned(m.height));
-        medium_.draw(c, tx, base, buf, 26, m.too_large ? kGrey : kText);
-        regular_.draw(c, tx + 170, base, upper(m.format), 22, m.too_large ? kGrey : kMuted);
+        snprintf(buf, sizeof(buf), "%d × %d", z.width, z.height);
+        medium_.draw(c, tx, base, buf, 26, kText);
+        regular_.draw(c, tx + 170, base, f.label, 22, kMuted);
+        // The rates, highest first from the left, as small segments. They fit between the format and the right edge
+        // of the row, and the lowest rates are left out if even narrow segments do not fit.
         float right = box.x + box.w - 12;
-        if (m.too_large) {
-            regular_.draw(c, right - 12 - regular_.measure("too large", 22), base, "too large", 22, kGrey);
-        } else {
-            // The rates, highest first from the left, as small segments. They fit between the format and the row's
-            // right edge, and the lowest rates are left out if even narrow segments do not fit.
-            const float left = tx + 170 + regular_.measure(upper(m.format), 22) + 24;
-            const size_t n = std::min(m.fps.size(), std::max<size_t>(1, size_t((right - left + 8) / (72 + 8))));
-            const float chip_w = std::min(104.f, (right - left + 8) / float(n) - 8), chip_h = 40;
-            for (size_t k = n; k-- > 0;) {
-                const Rect chip{right - chip_w, box.y + (box.h - chip_h) / 2, chip_w, chip_h};
-                const bool sel = on && std::fabs(m.fps[k] - cur_fps) < 0.5;
-                c.fill_rect(chip, sel ? kAccent : hovered(chip) ? kCardHover : kPanel, 4);
-                snprintf(buf, sizeof(buf), "%g fps", m.fps[k]);
-                medium_.draw(c, chip.x + (chip.w - medium_.measure(buf, 21)) / 2, chip.y + (chip.h + medium_.cap_height(21)) / 2,
-                             buf, 21, sel ? kText : kMuted);
-                Hit h{Hit::Fork, chip};
-                h.text = "mode";
-                h.json = batch(m.format, m.width, m.height, m.fps[k]);
-                hits_.push_back(h);
-                right -= chip_w + 8;
-            }
+        const float left = tx + 170 + regular_.measure(f.label, 22) + 24;
+        const size_t n = std::min(z.fps.size(), std::max<size_t>(1, size_t((right - left + 8) / (72 + 8))));
+        const float chip_w = std::min(104.f, (right - left + 8) / float(n) - 8), chip_h = 40;
+        for (size_t k = n; k-- > 0;) {
+            const Rect chip{right - chip_w, box.y + (box.h - chip_h) / 2, chip_w, chip_h};
+            const bool sel = on && z.fps[k] == cam->settings.fps;
+            c.fill_rect(chip, sel ? kAccent : hovered(chip) ? kCardHover : kPanel, 4);
+            snprintf(buf, sizeof(buf), "%d fps", z.fps[k]);
+            medium_.draw(c, chip.x + (chip.w - medium_.measure(buf, 21)) / 2, chip.y + (chip.h + medium_.cap_height(21)) / 2,
+                         buf, 21, sel ? kText : kMuted);
+            UsbCamera::Settings next = cam->settings;
+            next.format = f.key;
+            next.width = z.width;
+            next.height = z.height;
+            next.fps = z.fps[k];
+            Hit h{Hit::Fork, chip};
+            h.text = "mode";
+            h.data = batch(next, z.width, z.height);
+            hits_.push_back(h);
+            right -= chip_w + 8;
         }
         y += row_h;
     }
     if (!cam)
         regular_.draw(c, kMargin, y + 44, "Connect a camera first.", 24, kMuted);
-    else if (modes.empty())
+    else if (rows.empty())
         regular_.draw(c, kMargin, y + 44, "This camera lists no modes.", 24, kMuted);
 
     if (pages > 1) {

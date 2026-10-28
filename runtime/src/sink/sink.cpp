@@ -1,6 +1,7 @@
 #include "sink/sink.h"
 
 #include "core/log.h"
+#include "sink/babble_osc_sink.h"
 #include "sink/camera_stream_sink.h"
 #include "sink/debug_sink.h"
 #include "sink/eyecam_squint_sink.h"
@@ -37,6 +38,8 @@ std::unique_ptr<ISink> make_sink(const nlohmann::json &cfg, SinkDeps deps) {
         return std::make_unique<EyecamSquintSink>(cfg, std::move(deps));
     if (type == "frame_preview")
         return std::make_unique<FramePreviewSink>(cfg, std::move(deps));
+    if (type == "babble_osc")
+        return std::make_unique<BabbleOscSink>(cfg, std::move(deps));
     LOG.error("sink %s: unknown type '%s'", deps.name.c_str(), type.c_str());
     return nullptr;
 }

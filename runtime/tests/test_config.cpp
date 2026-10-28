@@ -9,6 +9,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <set>
 
 #include <unistd.h>
 
@@ -49,11 +50,39 @@ TEST_CASE("built-in defaults parse and carry the key settings") {
     CHECK_FALSE((*d)["threads"].contains("capR"));
 #endif
 #if !BABBLE_DEV_FEATURES
-    for (const char *key : {"output", "visualizer"})
-        CHECK_FALSE_MESSAGE(d->contains(key), key);
-    CHECK_FALSE((*d)["sinks"].contains("vrc_native"));
+    CHECK_FALSE(d->contains("visualizer"));
     CHECK((*d)["sinks"]["vrcft"]["enabled"] == false);
 #endif
+    // Every profile ships all the output modules, and only VRCFaceTracking is on by default.
+    CHECK_FALSE(d->contains("output"));
+    CHECK((*d)["outputs"] == json{{"vrcft", true}, {"vrc_native", false}, {"babble_osc", false}});
+    CHECK((*d)["pc_address"] == "");
+    std::set<std::string> roles;
+    for (auto &[name, sc] : (*d)["sinks"].items()) {
+        if (!sc.contains("output"))
+            continue;
+        roles.insert(sc["output"].get<std::string>());
+        // Each module names itself, and each of its settings is a key of the module with a value of the right kind.
+        REQUIRE_MESSAGE(sc.contains("module"), name);
+        CHECK_MESSAGE(!sc["module"].value("label", "").empty(), name);
+        for (const auto &o : sc["module"].value("options", json::array())) {
+            const std::string key = o.value("key", "");
+            CAPTURE(name);
+            CAPTURE(key);
+            REQUIRE(sc.contains(key));
+            if (o.value("kind", "") == "choice") {
+                bool found = false;
+                for (const auto &v : o["values"])
+                    found |= v == sc[key];
+                CHECK(found);
+                CHECK(o["labels"].size() == o["values"].size());
+            } else {
+                CHECK(o.value("kind", "") == "text");
+                CHECK((o.value("numeric", false) ? sc[key].is_number_integer() : sc[key].is_string()));
+            }
+        }
+    }
+    CHECK(roles == std::set<std::string>{"vrcft", "vrc_native", "babble_osc"});
     // Every user setting must point at a key in the defaults, because the loader drops a bad profile
     // trim with only a warning.
     for (const auto &row : (*d)["dashboard"]["settings"])
@@ -119,8 +148,6 @@ TEST_CASE("the SteamVR Settings section maps to live runtime settings") {
     std::map<std::string, std::pair<std::string, Type>> want = {
         {"eyeTracking", {"/sources/eye/tracking", Type::Bool}},
         {"eyeRateDivisor", {"/sources/eye/rate_divisor", Type::Int}},
-        {"opennessSource", {"/pipelines/eye/openness_source", Type::String}},
-        {"gazeSource", {"/pipelines/gaze/gaze_source", Type::String}},
         {"debugOverlay", {"/dashboard/enabled", Type::Bool}},
     };
 #if BABBLE_FRUNK_MOUTH
@@ -131,9 +158,6 @@ TEST_CASE("the SteamVR Settings section maps to live runtime settings") {
 #else
     // In the release profile, Mouth Tracking switches the USB tracker and there is no source or rate choice.
     want["mouthTracking"] = {"/sources/face/tracking", Type::Bool};
-#endif
-#if BABBLE_DEV_FEATURES
-    want["output"] = {"/output", Type::String};
 #endif
     auto entries = SteamVrSettingsBridge::entries_from_config(*d);
     REQUIRE(entries.size() == want.size());
@@ -146,18 +170,134 @@ TEST_CASE("the SteamVR Settings section maps to live runtime settings") {
     // The advanced options default to model openness and independent gaze.
     CHECK((*d)["pipelines"]["eye"]["openness_source"] == "model");
     CHECK((*d)["pipelines"]["gaze"]["gaze_source"] == "independent");
-    CHECK((*d)["dashboard"]["enabled"] == false);   // The debug overlay is off by default.
+    CHECK((*d)["pipelines"]["gaze"]["smoothing"] == 1);   // The fork smooths the gaze at Low by default.
+    CHECK((*d)["pipelines"]["eye"]["combine_widen"] == true);   // Both eyes send the mean Widen and dilation.
+    CHECK((*d)["pipelines"]["eye"]["combine_dilation"] == true);
+    CHECK((*d)["sources"]["face"]["tracker_flip_h"] == true);   // The Babble tracker image is flipped by default.
+    CHECK_FALSE((*d)["pipelines"]["face"].contains("mirror"));
+    CHECK((*d)["dashboard"]["enabled"] == true);    // The Babble tab is on after a new install.
 #if BABBLE_FRUNK_MOUTH
     CHECK((*d)["mouth_source"] == "frunk");         // The default is the Frame cameras unless the user selects USB.
-#endif
-#if BABBLE_DEV_FEATURES
-    CHECK((*d)["output"] == "vrcft");               // VRCFaceTracking is the default output.
 #endif
 
     // The loader drops an id that is not a bool, number or string setting and does not mirror it.
     json cfg = *d;
     cfg["steamvr_settings"]["values"].push_back({{"key", "bogus"}, {"id", "/sources/eye/ctrl_base_candidates"}});
     CHECK(SteamVrSettingsBridge::entries_from_config(cfg).size() == want.size());
+}
+
+TEST_CASE("the old Mirror Image switch becomes the default flip of the Babble tracker") {
+    const json old_settings = {{"pipelines", {{"face", {{"mirror", false}}}}}};
+    json cfg = {{"pipelines", {{"face", {{"mirror", false}, {"rotate", 0}}}}}, {"sources", {{"face", {{"tracker_flip_h", true}}}}}};
+    CHECK(migrate_face_mirror(cfg, {&old_settings}));
+    CHECK(cfg["sources"]["face"]["tracker_flip_h"] == false);
+    CHECK_FALSE(cfg["pipelines"]["face"].contains("mirror"));
+    CHECK(cfg["pipelines"]["face"]["rotate"] == 0);
+
+    // A layer that already sets the new key wins, and without the old key nothing changes.
+    const json both = {{"pipelines", {{"face", {{"mirror", false}}}}}, {"sources", {{"face", {{"tracker_flip_h", true}}}}}};
+    cfg["sources"]["face"]["tracker_flip_h"] = true;
+    CHECK_FALSE(migrate_face_mirror(cfg, {&both}));
+    CHECK(cfg["sources"]["face"]["tracker_flip_h"] == true);
+    const json none = json::object();
+    CHECK_FALSE(migrate_face_mirror(cfg, {&none}));
+}
+
+TEST_CASE("the old gaze smoothing switch and strength become the smoothing level") {
+    auto migrated = [](const std::vector<json> &layers, json cfg) {
+        std::vector<const json *> ptrs;
+        for (const json &l : layers)
+            ptrs.push_back(&l);
+        migrate_gaze_smoothing(cfg, ptrs);
+        return cfg["pipelines"]["gaze"];
+    };
+    auto gaze = [](const json &g) { return json{{"pipelines", {{"gaze", g}}}}; };
+    const json merged_default = gaze({{"smoothing", 1}});
+
+    // Off is level 0, and a strength is the level.
+    json cfg = gaze({{"smoothing", false}, {"smoothing_strength", 3}});
+    const json off = gaze({{"smoothing", false}, {"smoothing_strength", 3}});
+    CHECK(migrate_gaze_smoothing(cfg, {&off}));
+    CHECK(cfg["pipelines"]["gaze"] == json{{"smoothing", 0}});
+    const json on3 = gaze({{"smoothing", true}, {"smoothing_strength", 3}});
+    CHECK(migrated({on3}, on3)["smoothing"] == 3);
+    // On without a strength is level 1, and a strength alone is the level.
+    const json on = gaze({{"smoothing", true}});
+    CHECK(migrated({on}, on)["smoothing"] == 1);
+    const json strength = gaze({{"smoothing_strength", 2}});
+    json merged = merged_default;
+    merged["pipelines"]["gaze"]["smoothing_strength"] = 2;
+    CHECK(migrated({strength}, merged) == json{{"smoothing", 2}});
+    // The strength is always erased, and a result outside 0-3 is clamped.
+    const json big = gaze({{"smoothing_strength", 9}}), neg = gaze({{"smoothing_strength", -4}});
+    CHECK(migrated({big}, big) == json{{"smoothing", 3}});
+    CHECK(migrated({neg}, neg) == json{{"smoothing", 0}});
+
+    // A numeric smoothing wins over the old keys of its own layer, and the newest layer wins.
+    const json numeric = gaze({{"smoothing", 2}, {"smoothing_strength", 3}});
+    CHECK(migrated({numeric}, numeric) == json{{"smoothing", 2}});
+    const json older = gaze({{"smoothing", false}}), newer = gaze({{"smoothing_strength", 2}});
+    json both = gaze({{"smoothing", false}, {"smoothing_strength", 2}});
+    CHECK(migrated({older, newer}, both)["smoothing"] == 2);
+    CHECK(migrated({newer, older}, both)["smoothing"] == 0);
+
+    // A config of the new shape does not change, and the call says so.
+    json fresh = merged_default;
+    const json fresh_layer = gaze({{"smoothing", 2}});
+    fresh["pipelines"]["gaze"]["smoothing"] = 2;
+    CHECK_FALSE(migrate_gaze_smoothing(fresh, {&fresh_layer}));
+    CHECK(fresh["pipelines"]["gaze"] == json{{"smoothing", 2}});
+}
+
+TEST_CASE("load_config turns the old gaze smoothing keys into the smoothing level and keeps it") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("babble_cfg_gaze_" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    const fs::path settings = dir / "settings.json";
+
+    std::ofstream(settings) << R"({"pipelines":{"gaze":{"smoothing_strength":2}}})";
+    ConfigLoad cl = load_config(dir / "none.json", settings);
+    CHECK(cl.config["pipelines"]["gaze"]["smoothing"] == 2);
+    CHECK_FALSE(cl.config["pipelines"]["gaze"].contains("smoothing_strength"));
+    for (const auto &fix : cl.type_fixes)
+        CHECK_MESSAGE(fix.find("smoothing") == std::string::npos, fix);
+
+    std::ofstream(settings, std::ios::trunc) << R"({"pipelines":{"gaze":{"smoothing":false,"smoothing_strength":3}}})";
+    cl = load_config(dir / "none.json", settings);
+    CHECK(cl.config["pipelines"]["gaze"]["smoothing"] == 0);
+    CHECK_FALSE(cl.config["pipelines"]["gaze"].contains("smoothing_strength"));
+    for (const auto &fix : cl.type_fixes)
+        CHECK_MESSAGE(fix.find("smoothing") == std::string::npos, fix);
+
+    // Without any old key the shipped default stays.
+    std::ofstream(settings, std::ios::trunc) << "{}";
+    cl = load_config(dir / "none.json", settings);
+    CHECK(cl.config["pipelines"]["gaze"]["smoothing"] == 1);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("the old single output choice becomes the output switches") {
+    const json defaults = {{"outputs", {{"vrcft", true}, {"vrc_native", false}, {"babble_osc", false}}}};
+    json cfg = defaults;
+    cfg["output"] = "vrc_native";
+    const json old_settings = {{"output", "vrc_native"}};
+    CHECK(migrate_output_choice(cfg, {&old_settings}) == "vrc_native");
+    CHECK_FALSE(cfg.contains("output"));
+    CHECK(cfg["outputs"] == json{{"vrcft", false}, {"vrc_native", true}, {"babble_osc", false}});
+
+    // A switch that a layer sets stays, and the newest layer with a choice wins.
+    cfg = defaults;
+    cfg["outputs"]["babble_osc"] = true;
+    const json user = {{"output", "vrcft"}};
+    const json settings = {{"output", "vrc_native"}, {"outputs", {{"babble_osc", true}}}};
+    CHECK(migrate_output_choice(cfg, {&user, &settings}) == "vrc_native");
+    CHECK(cfg["outputs"] == json{{"vrcft", false}, {"vrc_native", true}, {"babble_osc", true}});
+
+    // Without an old choice nothing changes.
+    cfg = defaults;
+    const json none = json::object();
+    CHECK(migrate_output_choice(cfg, {&none}).empty());
+    CHECK(cfg == defaults);
 }
 
 TEST_CASE("values of the wrong type are reset to the default and reported") {

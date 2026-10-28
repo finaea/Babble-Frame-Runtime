@@ -1,6 +1,10 @@
 #include <doctest/doctest.h>
 
+#include "core/metrics.h"
+#include "defaults_json.h"
+#include "core/config.h"
 #include "model/steamvr_gaze.h"
+#include "state/expression_state.h"
 
 #include <algorithm>
 #include <array>
@@ -109,4 +113,57 @@ TEST_CASE("per-eye gaze directions convert like frameeyeosc's gaze_angles()") {
     auto o = gaze::from_direction(0, 0, -1, 45, false, yaw10);
     CHECK((*o)[0] == doctest::Approx(10.0 / 45));
     CHECK_FALSE(gaze::from_direction(0, 0, 0, 45, false, none));
+}
+
+TEST_CASE("gaze smoothing is off at level 0, steadies a jump at a level, and starts again on a reset") {
+    gaze::Smoother sm({{1.5, 0.3, 1.0}, {0.8, 0.1, 1.0}});
+    CHECK(sm.levels() == 2);
+    const float rest[4] = {0, 0, 0, 0}, jump[4] = {0.5f, -0.5f, 0.5f, -0.5f};
+    float out[4];
+    sm.apply(jump, out, 0, 0);   // Off passes the values through.
+    CHECK(out[0] == 0.5f);
+
+    const uint64_t step = 11'111'111;   // 90 Hz.
+    sm.apply(rest, out, 1, step);       // The first sample of a level does not change.
+    CHECK(out[0] == 0.0f);
+    sm.apply(jump, out, 1, 2 * step);
+    CHECK(out[0] > 0.0f);
+    CHECK(out[0] < 0.5f);
+    CHECK(out[1] < 0.0f);
+    CHECK(out[1] > -0.5f);
+    const float low = out[0];
+
+    sm.apply(rest, out, 2, 3 * step);   // A new level starts again from the sample.
+    CHECK(out[0] == 0.0f);
+    sm.apply(jump, out, 2, 4 * step);
+    CHECK(out[0] < low);                // The higher level smooths more.
+
+    sm.reset();
+    sm.apply(jump, out, 2, 5 * step);
+    CHECK(out[0] == 0.5f);
+    sm.apply(rest, out, 3, 6 * step);   // A level without a preset is off.
+    CHECK(out[0] == 0.0f);
+}
+
+TEST_CASE("the gaze smoothing option takes the whole levels 0 to 3 and nothing else") {
+    const nlohmann::json threads = nlohmann::json::object();
+    ExpressionState state;
+    StatsRegistry stats;
+    LatestSlot<StereoFrame> slot;
+    SteamVrGaze p({{"feed", "eye"}}, PipelineDeps{"gaze", threads, [&](const std::string &) { return &slot; }, state, stats, {}, {}});
+    for (int level : {0, 1, 2, 3, 0})
+        CHECK(p.set_option("smoothing", level));
+    // A fraction, a level out of range and a boolean are refused.
+    CHECK_FALSE(p.set_option("smoothing", 1.5));
+    CHECK_FALSE(p.set_option("smoothing", -1));
+    CHECK_FALSE(p.set_option("smoothing", 4));
+    CHECK_FALSE(p.set_option("smoothing", true));
+    CHECK_FALSE(p.set_option("smoothing", "high"));
+    CHECK(p.set_option("smoothing", 2.0));   // A whole number that is written as a float is a level.
+
+    // Medium is the default of the shipped config.
+    std::string err;
+    auto d = parse_json(kDefaultsJson, &err);
+    REQUIRE_MESSAGE(d.has_value(), err);
+    CHECK((*d)["pipelines"]["gaze"]["smoothing"] == 1);
 }

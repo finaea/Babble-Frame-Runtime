@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -33,7 +34,10 @@ public:
         float width_m = 1.6f;
         ExpressionState *state = nullptr;   // The source of the eye panel data, or null for no data.
         std::string mouth_tracking_id = "/sources/mouth/tracking";   // The setting that the mouth card switch changes.
-        FramePreviewSink *preview = nullptr;   // The face frames for the Mouth page, or null for no preview.
+        // Fills a newer camera preview and returns true, or returns false if there is none. The dashboard thread
+        // calls it only while the camera options page shows.
+        std::function<bool(CameraPreview &)> preview;
+        FramePreviewSink *frame_preview = nullptr;   // The face frames for the fork's Mouth page, or null for none.
     };
     ~Dashboard();
 
@@ -49,6 +53,8 @@ public:
     void set_choice(const std::string &id, double value);
     // Gives the Eyes, Squint and Mouth pages the current config for their ranges, modes and URL.
     void set_config(const nlohmann::json &cfg);
+    // Selects the option of a text setting that has this value.
+    void set_choice_text(const std::string &id, const std::string &value);
     // Returns the settings that changed on the panel since the last call, as pairs of JSON pointer and new value.
     std::vector<std::pair<std::string, nlohmann::json>> take_changes();
     // Returns true one time for each click on the visualizer button.
@@ -74,7 +80,6 @@ private:
     bool create_overlays();
     void destroy_overlays();
     void present();
-    void show_keyboard(const std::string &text);   // Opens the SteamVR keyboard for the stream URL.
     // Reads the eye panel values from ExpressionState and changes the gaze to degrees.
     std::array<EyeReading, 2> read_eyes() const;
     // Reads the config, the signals and the preview frame for the Eyes, Squint and Mouth pages.
@@ -84,6 +89,8 @@ private:
     std::array<SignalId, 2 * kPerEye> eye_ids_{};
     std::array<EyeReading, 2> drawn_eyes_{};
     uint64_t last_present_ns_ = 0;
+    CameraPreview preview_;          // Only the dashboard thread uses this.
+    uint64_t last_preview_ns_ = 0;
 
     SteamVrClient *vr_ = nullptr;
     ThreadSpec thread_spec_;
@@ -117,6 +124,11 @@ private:
     bool visible_ = false;
     std::optional<Point> pointer_;
     int hover_ = -1;   // The value of view_.hit_at(pointer_) at the last draw.
+    // The text setting that the SteamVR keyboard edits, or "" if the keyboard is closed.
+    std::string editing_id_;
+    bool editing_numeric_ = false;
+    void open_keyboard(const std::string &id);
+    void apply_output_setting(const std::string &id, const nlohmann::json &value);   // Call this with mutex_ held.
 };
 
 }

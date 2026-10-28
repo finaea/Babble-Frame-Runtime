@@ -44,12 +44,25 @@ int main(int argc, char **argv) {
 
     std::vector<Choice> choices = {
         {"/sources/mouth/process_fps", "Mouth Tracking Rate", "Lower rates save battery.", "Hz",
-         {30, 60, 90, 120}, 120},
+         {30, 60, 90, 120}, 120, false, ChoicePage::Mouth},
         {"/sources/eye/rate_divisor", "Eye Tracking Rate",
          "A share of the eye camera rate. Lower rates save battery.", "", {1, 2, 3}, 1,
-         false, false, {"1:1", "1:2", "1:3"}},
+         false, ChoicePage::Eye, {"1:1", "1:2", "1:3"}},
+        {"/pipelines/gaze/smoothing", "Gaze Smoothing",
+         "Steadies the gaze. Stronger smoothing adds a little lag to fast eye movements.", "", {0, 1, 2, 3}, 0,
+         false, ChoicePage::Eye, {"Off", "Low", "Medium", "High"}},
+        {"/pipelines/eye/openness_source", "Openness Source",
+         "Babble uses the runtime's eye model. Native uses the headset's own eye openness.", "", {0, 1}, 0, false,
+         ChoicePage::EyeSources, {"Babble", "Native"}, {"model", "native"}},
+        {"/pipelines/gaze/gaze_source", "Gaze Source",
+         "Independent lets each eye move on its own. Combined uses the single gaze of SteamVR.", "", {0, 1}, 0, false,
+         ChoicePage::EyeSources, {"Independent", "Combined"}, {"independent", "combined"}},
+        {"/pipelines/eye/combine_widen", "Combine Eye Widen", "Both eyes get the average Widen of the two eyes.", "",
+         {0, 1}, 1, true, ChoicePage::EyeModifiers},
+        {"/pipelines/eye/combine_dilation", "Combine Pupil Dilation",
+         "Both eyes get the average pupil dilation of the two eyes.", "", {0, 1}, 0, true, ChoicePage::EyeModifiers},
         {"/sinks/camera_stream/active", "Camera Stream",
-         "Stream camera frames on TCP 9099 for diagnostics. Turns off after a restart.", "", {0, 1}, 1, true, true},
+         "Stream camera frames on TCP 9099 for diagnostics. Turns off after a restart.", "", {0, 1}, 1, true, ChoicePage::Diagnostics},
     };
     auto feed = [](Health h, double hz = 0, std::string detail = "", bool tracking = true) {
         FeedStatus f;
@@ -67,6 +80,21 @@ int main(int argc, char **argv) {
     // This eye is half closed and the calibration is not complete.
     tracking.eyes[1] = {true, true, -21, 5, 0.35, 0, true, 0.251, false, 0, 0, false, 0};
     tracking.link = {true, true, "lan", "Demo PC", "192.0.2.10", 3.6};
+    // The output modules as main.cpp fills them from the module blocks in defaults.json.
+    const ModuleOption native_target{"/sinks/vrc_native/target", "VRChat On", false, false,
+                                     {"\"auto\"", "\"pc\"", "\"frame\""}, {"Auto", "PC", "Frame"}, "\"auto\""};
+    const ModuleOption osc_target{"/sinks/babble_osc/target", "Send To", false, false,
+                                  {"\"auto\"", "\"pc\"", "\"frame\""}, {"Auto", "PC", "Frame"}, "\"auto\""};
+    const ModuleOption osc_port{"/sinks/babble_osc/port", "Port", true, true, {}, {}, "8888"};
+    tracking.outputs = {
+        {"vrcft", "VRCFaceTracking", "The Babble module in VRCFaceTracking on your PC, found on the network by itself.",
+         true, true, "Linked to Demo PC via LAN", {}},
+        {"vrc_native", "VRChat Native", "Straight into VRChat's own face tracking, without VRCFaceTracking.", false,
+         false, "", {native_target}},
+        {"babble_osc", "Babble OSC",
+         "Baballonia-format OSC to the PC address, the PC you stream from, or this headset. Allow its UDP port in "
+         "Windows Firewall.",
+         false, false, "", {osc_target, osc_port}}};
     Status paused{true, Worn::No, feed(Health::Paused), feed(Health::Paused)};
     Status fault{true, Worn::Yes, feed(Health::Working, 120),
                  feed(Health::Fault, 0, "cannot connect to dsp_service (is the eye tracking service running?)")};
@@ -88,6 +116,16 @@ int main(int argc, char **argv) {
     native_frame.link = {true, false, "frame", "", "127.0.0.1", -1, true};
     view.render(c, native_frame, choices, std::nullopt);
     save(c, "home_native_frame");
+    // Show Babble OSC as the first output that is on, and VRCFaceTracking with another output on.
+    Status osc_home = tracking;
+    osc_home.link = {true, true, "", "", "192.0.2.10:8888", -1};
+    osc_home.link.osc = true;
+    view.render(c, osc_home, choices, std::nullopt);
+    save(c, "home_osc");
+    Status more = tracking;
+    more.link.more = 1;
+    view.render(c, more, choices, std::nullopt);
+    save(c, "home_more");
     view.render(c, tracking, choices, Point{84, DashboardView::kHeight - 84.f});
     save(c, "home_cog_hover");
     view.render(c, paused, choices, std::nullopt);
@@ -119,24 +157,70 @@ int main(int argc, char **argv) {
     choices[0].value = 60;
     view.render(c, tracking, choices, Point{1000, 222});
     save(c, "settings");
+    view.set_page(DashboardView::Page::Eye);
+    view.render(c, tracking, choices, std::nullopt);
+    save(c, "eye");
+    view.set_page(DashboardView::Page::EyeSources);
+    view.render(c, tracking, choices, std::nullopt);
+    save(c, "eye_sources");
+    view.set_page(DashboardView::Page::EyeModifiers);
+    view.render(c, tracking, choices, std::nullopt);
+    save(c, "eye_modifiers");
+    view.set_page(DashboardView::Page::Mouth);
+    view.render(c, tracking, choices, std::nullopt);
+    save(c, "mouth");
 
     // Show the camera row for a USB mouth source, and then its page with two cameras and an active tracker.
     Status usb = tracking;
     usb.mouth_source = "usb";
-    usb.cameras = {{"303a:8000:DEMO01", "Babble USB Tracker", "303a:8000 \u00b7 demo tracker"},
-                   {"046d:0825:DEMO02", "USB Webcam", "046d:0825 \u00b7 demo camera"}};
+    // A bulk MJPEG tracker, and an isochronous camera with MJPEG and YUY2, as the 1e45:0209 camera has them.
+    UsbCamera tracker{"303a:8000:DEMO01", "Babble USB Tracker", "303a:8000 \u00b7 demo tracker"};
+    tracker.formats = {{"mjpeg", "MJPEG", {{240, 240, {60}}}}};
+    tracker.settings = {"mjpeg", 240, 240, 60, 0, true, false};
+    UsbCamera webcam{"1e45:0209@1-1", "Generic HD Camera", "1e45:0209", true};
+    const std::vector<int> mjpeg_fps{120, 60, 30, 25, 20};
+    webcam.formats = {{"mjpeg", "MJPEG",
+                       {{640, 480, mjpeg_fps}, {352, 288, mjpeg_fps}, {320, 240, mjpeg_fps}, {160, 120, mjpeg_fps}}},
+                      {"yuy2", "YUY2", {{640, 480, {30}}, {352, 288, {30}}, {320, 240, {30}}, {160, 120, {30}}}}};
+    webcam.settings = {"mjpeg", 640, 480, 60, 90, false, false};
+    usb.cameras = {tracker, webcam};
     usb.camera = "303a:8000:DEMO01";
     usb.active_camera = usb.camera;
     view.render(c, usb, choices, std::nullopt);
-    save(c, "settings_usb");
+    save(c, "mouth_usb");
     // In release builds, the USB tracker is the only mouth source, so there is no Frunk/USB row and no mouth rate.
     Status release = usb;
     release.mouth_source_selectable = false;
-    view.render(c, release, {choices[1]}, std::nullopt);
+    view.render(c, release, {choices[1], choices[2]}, std::nullopt);
+    save(c, "mouth_release");
+    view.set_page(DashboardView::Page::Settings);
+    view.render(c, release, {choices[1], choices[2]}, std::nullopt);
     save(c, "settings_release");
     view.set_page(DashboardView::Page::Cameras);
     view.render(c, usb, choices, Point{600, 340});   // The pointer is on the second camera.
     save(c, "cameras");
+    view.set_options_camera(webcam.id);
+    view.set_page(DashboardView::Page::CameraOptions);
+    // A 90 degree turn makes the 640x480 image 225x300 in the preview box. The demo image is a soft gradient.
+    CameraPreview pv{webcam.id, 225, 300, std::vector<uint8_t>(225 * 300), 1};
+    for (int y = 0; y < 300; y++)
+        for (int x = 0; x < 225; x++)
+            pv.gray[size_t(y) * 225 + x] = uint8_t(40 + (x + y) * 160 / 525);
+    Status live = usb;
+    live.active_camera = webcam.id;
+    live.preview = &pv;
+    view.render(c, live, choices, std::nullopt);
+    save(c, "camera_options");
+    view.render(c, usb, choices, std::nullopt);
+    save(c, "camera_options_inactive");
+    view.set_page(DashboardView::Page::CameraResolution);
+    view.render(c, usb, choices, std::nullopt);
+    save(c, "camera_resolution");
+    view.set_options_camera(tracker.id);
+    view.set_page(DashboardView::Page::CameraOptions);
+    view.render(c, usb, choices, std::nullopt);
+    save(c, "camera_options_tracker");
+    view.set_page(DashboardView::Page::Cameras);
     Status none = usb;
     none.cameras.clear();
     none.camera.clear();
@@ -176,7 +260,9 @@ int main(int argc, char **argv) {
     }
     diag.verbose_minutes_left = 0;
     diag.last_diagnostics.clear();
-    choices[2].value = 0;
+    for (Choice &ch : choices)   // Turn the camera stream off.
+        if (ch.id == "/sinks/camera_stream/active")
+            ch.value = 0;
     view.render(c, diag, choices, Point{1100, 222});
     save(c, "diagnostics_off");
     view.set_page(DashboardView::Page::Settings);
@@ -221,19 +307,16 @@ int main(int argc, char **argv) {
             return d;
         };
         std::vector<Choice> fork_choices = choices;
-        fork_choices.push_back({"/pipelines/gaze/smoothing_strength", "Gaze Smoothing",
-                                "Higher is steadier but follows later. Off is Valve's raw gaze.",
-                                "", {0, 1, 2, 3}, 1, false, false, {"Off", "Low", "Medium", "High"}, "gaze"});
         fork_choices.push_back({"/pipelines/eye/blink_hold_ms", "Blink Hold",
                                 "Keeps a blink closed long enough for other players to see it. Your mirror doesn't need it.",
-                                "ms", {0, 50, 100, 150}, 0, false, false, {"Off", "50", "100", "150"}, "eyelids"});
+                                "ms", {0, 50, 100, 150}, 0, false, ChoicePage::Eyelids, {"Off", "50", "100", "150"}});
         fork_choices.push_back({"/sinks/squint/active", "Squint",
                                 "Squint from eyecam's engine on the eye cameras. Needs the squint calibration once.", "",
-                                {0, 1}, 1, true, false, {}, "squint"});
+                                {0, 1}, 1, true, ChoicePage::Squint});
 
-        view.set_page(DashboardView::Page::Settings);
+        view.set_page(DashboardView::Page::Eye);
         view.render(c, release, fork_choices, std::nullopt);
-        save(c, "settings_fork");
+        save(c, "eye_fork_pages");
 
         view.set_page(DashboardView::Page::Eyes);
         view.set_page_data(data({}));
@@ -307,7 +390,8 @@ int main(int argc, char **argv) {
     // The USB mouth camera: a GC0308-like camera at 640x480, its states, the free crop and the Resolution page.
     {
         auto cfg = std::make_shared<nlohmann::json>(nlohmann::json::parse(R"({
-            "sources": {"face": {"mode": "usb", "camera": "", "format": "mjpeg", "width": 640, "height": 480, "fps": 30}},
+            "sources": {"face": {"mode": "usb", "camera": "", "width": 240, "height": 240, "fps": 30,
+                                 "cameras": {"0c45:6366:1-1": {"format": "mjpeg", "width": 640, "height": 480, "fps": 30}}}},
             "pipelines": {"face": {"roi": [150, 120, 345, 301], "roi_square": false, "rotate": 0, "flip": "none"}}
         })"));
         auto frame = std::make_shared<PreviewImage>();
@@ -320,13 +404,10 @@ int main(int argc, char **argv) {
                 const float dx = (x - 320) / 110.f, dy = (y - 290) / 45.f;
                 frame->pixels[size_t(y) * 640 + x] = uint8_t(dx * dx + dy * dy < 1 ? 40 : 80 + x / 8 + y / 6);
             }
-        const UsbCamera gc0308{"0c45:6366:1-1", "USB 2.0 Camera", "0c45:6366",
-                               {{"mjpeg", 640, 480, {30}},
-                                {"mjpeg", 320, 240, {120}},
-                                {"mjpeg", 160, 120, {30, 15, 10, 5}},
-                                {"yuyv", 640, 480, {30}},
-                                {"yuyv", 320, 240, {30}},
-                                {"yuyv", 160, 120, {30}}}};
+        UsbCamera gc0308{"0c45:6366:1-1", "USB 2.0 Camera", "0c45:6366", true};
+        gc0308.formats = {{"mjpeg", "MJPEG", {{640, 480, {30}}, {320, 240, {120}}, {160, 120, {30, 15, 10, 5}}}},
+                          {"yuy2", "YUY2", {{640, 480, {30}}, {320, 240, {30}}, {160, 120, {30}}}}};
+        gc0308.settings = {"mjpeg", 640, 480, 30};
         Status u = tracking;
         u.mouth_source = "usb";
         u.cameras = {gc0308};
@@ -411,18 +492,15 @@ int main(int argc, char **argv) {
             printf("320x240 pick sends %s = %s\n", ptr.c_str(), v.dump().c_str());
         v->render(c, u, choices, std::nullopt);
         save(c, "resolution_gc0308_picked");
-        // A webcam with HD modes that are too large, on two pages.
+        // A webcam with HD modes, on two pages.
         Status hd = u;
-        hd.cameras = {{"046d:0825:DEMO", "HD Webcam", "046d:0825",
-                       {{"mjpeg", 1920, 1080, {30}, true},
-                        {"mjpeg", 1280, 720, {30}, true},
-                        {"mjpeg", 640, 480, {30, 25, 20, 15, 10, 7.5, 5}},
-                        {"mjpeg", 320, 240, {60, 50, 30, 25, 24, 20, 15, 12, 10, 7.5, 5, 1}},
-                        {"yuyv", 1280, 720, {10}, true},
-                        {"yuyv", 640, 480, {30}},
-                        {"yuyv", 320, 240, {30}},
-                        {"yuyv", 176, 144, {30}},
-                        {"yuyv", 160, 120, {30}}}}};
+        UsbCamera webcam{"046d:0825:DEMO", "HD Webcam", "046d:0825"};
+        webcam.formats = {{"mjpeg", "MJPEG", {{1920, 1080, {30}}, {1280, 720, {30}}, {640, 480, {30, 25, 20, 15, 10, 5}},
+                                              {320, 240, {60, 50, 30, 25, 24, 20, 15, 12, 10, 5, 1}}}},
+                          {"yuy2", "YUY2", {{1280, 720, {10}}, {640, 480, {30}}, {320, 240, {30}}, {176, 144, {30}},
+                                            {160, 120, {30}}}}};
+        webcam.settings = {"mjpeg", 640, 480, 30};
+        hd.cameras = {webcam};
         hd.usb_stream.camera = "046d:0825:DEMO";
         v->render(c, hd, choices, std::nullopt);
         save(c, "resolution_webcam");
@@ -436,6 +514,45 @@ int main(int argc, char **argv) {
         v->click({60, 70});
         printf("back from the Resolution page: %s\n", v->page() == DashboardView::Page::Mouth ? "Mouth" : "other");
     }
+    // Show the Outputs page with the PC address found from Steam Link, typed in, and rejected.
+    view.set_page(DashboardView::Page::Outputs);
+    Status outs = tracking;
+    view.render(c, outs, choices, std::nullopt);
+    save(c, "outputs");
+    outs.pc_address = "192.0.2.10";
+    outs.outputs[1].on = true;
+    outs.outputs[1].ok = true;
+    outs.outputs[1].status = "Sending to VRChat at 192.0.2.10";
+    outs.outputs[2].on = true;
+    outs.outputs[2].ok = true;
+    outs.outputs[2].status = "Sending to 192.0.2.10:8888";
+    view.render(c, outs, choices, std::nullopt);
+    save(c, "outputs_address");
+    outs.output_error = "Port: abc is not a number";
+    view.render(c, outs, choices, std::nullopt);
+    save(c, "outputs_error");
+    // Without an address or a Steam Link session, the outputs that are on wait.
+    Status waiting = tracking;
+    waiting.outputs[0].ok = false;
+    waiting.outputs[0].status = "Searching for VRCFaceTracking\u2026";
+    waiting.outputs[1].on = true;
+    waiting.outputs[1].status = "Waiting for a Steam Link session";
+    waiting.outputs[1].options[0].value = "\"pc\"";
+    waiting.outputs[2].on = true;
+    waiting.outputs[2].status = "Set a PC address, or stream with Steam Link";
+    view.render(c, waiting, choices, std::nullopt);
+    save(c, "outputs_waiting");
+    // VRChat Native on this headset, with the other outputs off.
+    Status frame_only = tracking;
+    frame_only.outputs[0].on = false;
+    frame_only.outputs[0].ok = false;
+    frame_only.outputs[0].status.clear();
+    frame_only.outputs[1].on = true;
+    frame_only.outputs[1].ok = true;
+    frame_only.outputs[1].status = "Sending to VRChat on this headset";
+    frame_only.outputs[1].options[0].value = "\"frame\"";
+    view.render(c, frame_only, choices, std::nullopt);
+    save(c, "outputs_frame");
 
     // Measure the render cost for each redraw on the dashboard thread.
     {

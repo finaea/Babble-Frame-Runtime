@@ -3,6 +3,8 @@
 #include "babble_version.h"
 #include "core/clock.h"
 
+#include <nlohmann/json.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -67,6 +69,79 @@ std::string format_hz(double hz) {
     return buf;
 }
 
+// Returns the shown value of a choice, such as "On", "60 Hz" or the label of its option.
+std::string choice_value(const Choice &ch) {
+    std::string value = ch.boolean ? (ch.value != 0 ? "On" : "Off") : format_value(ch.value, ch.unit);
+    for (size_t k = 0; k < ch.options.size() && k < ch.option_labels.size(); k++)
+        if (std::fabs(ch.options[k] - ch.value) < 1e-6)
+            value = ch.option_labels[k];
+    return value;
+}
+
+bool eye_page(ChoicePage p) { return p == ChoicePage::Eye || p == ChoicePage::EyeSources || p == ChoicePage::EyeModifiers; }
+
+// Returns "Label value  ·  Label value" for the choices of one page.
+std::string page_summary(const std::vector<Choice> &choices, ChoicePage page) {
+    std::string out;
+    for (const Choice &ch : choices)
+        if (ch.page == page)
+            out += (out.empty() ? "" : "  \u00b7  ") + ch.label + " " + choice_value(ch);
+    return out;
+}
+
+std::string size_label(int w, int h) { return std::to_string(w) + " \u00d7 " + std::to_string(h); }
+
+// Returns the camera settings as the JSON object of the setting.
+std::string settings_json(const UsbCamera::Settings &s) {
+    return nlohmann::json{{"format", s.format}, {"width", s.width},   {"height", s.height}, {"fps", s.fps},
+                          {"rotate", s.rotate}, {"flip_h", s.flip_h}, {"flip_v", s.flip_v}}
+        .dump();
+}
+
+const UsbCamera::Format *find_format(const UsbCamera &cam, const std::string &key) {
+    for (const auto &f : cam.formats)
+        if (f.key == key)
+            return &f;
+    return nullptr;
+}
+
+// Moves the size and the rate of s to the nearest ones that its format has, so that the page always shows a mode
+// that the camera offers.
+void fit_mode(const UsbCamera &cam, UsbCamera::Settings &s) {
+    const UsbCamera::Format *f = find_format(cam, s.format);
+    if (!f || f->sizes.empty())
+        return;
+    const UsbCamera::Size *best = &f->sizes.front();
+    for (const auto &z : f->sizes)
+        if (std::abs(z.width - s.width) + std::abs(z.height - s.height) <
+            std::abs(best->width - s.width) + std::abs(best->height - s.height))
+            best = &z;
+    s.width = best->width;
+    s.height = best->height;
+    if (best->fps.empty())
+        return;
+    int fps = best->fps.front();
+    for (int r : best->fps)
+        if (std::abs(r - s.fps) < std::abs(fps - s.fps))
+            fps = r;
+    s.fps = fps;
+}
+
+const UsbCamera::Size *find_size(const UsbCamera &cam, const UsbCamera::Settings &s) {
+    if (const auto *f = find_format(cam, s.format))
+        for (const auto &z : f->sizes)
+            if (z.width == s.width && z.height == s.height)
+                return &z;
+    return nullptr;
+}
+
+}
+
+std::string camera_setting_id(const std::string &camera_id) {
+    std::string token;
+    for (char ch : camera_id)
+        token += ch == '~' ? "~0" : ch == '/' ? "~1" : std::string(1, ch);
+    return "/sources/face/cameras/" + token;
 }
 
 bool DashboardView::load_fonts(const std::filesystem::path &dir) {
@@ -129,7 +204,7 @@ void DashboardView::render(Canvas &c, const Status &status, const std::vector<Ch
         render_home(c, status);
         render_link(c, status.link, render_visualizer_button(c, status.visualizer) - 32);
     } else if (page_ == Page::Cameras) {
-        render_cameras(c, status);
+        render_cameras(c, choices, status);
     } else if (page_ == Page::Diagnostics) {
         render_diagnostics(c, choices, status);
     } else if (page_ == Page::Eyes) {
@@ -137,9 +212,25 @@ void DashboardView::render(Canvas &c, const Status &status, const std::vector<Ch
     } else if (page_ == Page::Squint) {
         render_squint(c, choices);
     } else if (page_ == Page::Mouth) {
-        render_mouth(c, status);
+        // The fork's Mouth page replaces render_mouth_page, which still shows for the headset cameras of a dev build.
+        if (status.mouth_source_selectable && status.mouth_source != "usb")
+            render_mouth_page(c, choices, status);
+        else
+            render_mouth(c, status);
     } else if (page_ == Page::Resolution) {
         render_resolution(c, status);
+    } else if (page_ == Page::Eye) {
+        render_eye_page(c, choices, status);
+    } else if (page_ == Page::EyeSources) {
+        render_choice_page(c, "Data Sources", choices, ChoicePage::EyeSources, status);
+    } else if (page_ == Page::EyeModifiers) {
+        render_choice_page(c, "Modifiers", choices, ChoicePage::EyeModifiers, status);
+    } else if (page_ == Page::Outputs) {
+        render_outputs(c, status);
+    } else if (page_ == Page::CameraOptions) {
+        render_camera_options(c, status);
+    } else if (page_ == Page::CameraResolution) {
+        render_camera_resolution(c, status);
     } else {
         render_settings(c, choices, status);
     }
@@ -290,10 +381,14 @@ void DashboardView::render_link(Canvas &c, const LinkReading &link, float right)
     c.fill_circle(x + dot_r, y, dot_r, link.linked && !link.no_data && !link.restart ? kGreen : kAmber);
     const float label_x = x + 2 * dot_r + 14;
     const float base = y + medium_.cap_height(px) / 2;
-    const char *label = link.native ? "VRChat" : "PC";
+    const char *label = link.native ? "VRChat" : link.osc ? "OSC" : "PC";
     medium_.draw(c, label_x, base, label, px, kText);
     std::string text;
-    if (link.native) {
+    if (link.osc) {
+        text = link.address.empty() ? "Babble OSC, set a PC address" : "Babble OSC to " + link.address;
+        if (!link.address.empty() && !link.linked)
+            text += "  \u00b7  no data";
+    } else if (link.native) {
         const std::string where = link.path == "pc"      ? "native, on the PC  \u00b7  " + link.address
                                   : link.path == "frame" ? std::string("native, on this headset")
                                   : link.path.empty()    ? std::string("native, waiting for Steam Link")
@@ -317,8 +412,11 @@ void DashboardView::render_link(Canvas &c, const LinkReading &link, float right)
     } else {
         text = "Searching for VRCFaceTracking\u2026";
     }
+    if (link.more > 0)
+        text += "  \u00b7  +" + std::to_string(link.more) + " more";
     const float text_x = label_x + medium_.measure(label, px) + 16;
     regular_.draw(c, text_x, base, fit(regular_, text, px, right - text_x), px, link.linked ? kText : kMuted);
+    hits_.push_back({Hit::OpenOutputs, {x - 12, y - 40, right - x + 12, 80}});
 }
 
 void DashboardView::render_switch(Canvas &c, Rect r, bool on, bool hover, std::optional<Color> on_color) {
@@ -350,8 +448,9 @@ void DashboardView::render_back(Canvas &c, const char *title) {
 }
 
 float DashboardView::render_segments(Canvas &c, float right, float y, const std::vector<std::string> &labels,
-                                     int selected, const std::function<void(size_t, const Rect &)> &hit) {
-    const float seg_w = 160, seg_h = 64, pad = 4;
+                                     int selected, const std::function<void(size_t, const Rect &)> &hit, float seg_h,
+                                     float seg_w) {
+    const float pad = 4;
     const float ctl_w = seg_w * float(labels.size()) + 2 * pad;
     const Rect ctl{right - ctl_w, y, ctl_w, seg_h + 2 * pad};
     c.fill_rect(ctl, kPanel, 4);
@@ -368,32 +467,57 @@ float DashboardView::render_segments(Canvas &c, float right, float y, const std:
     return ctl.x;
 }
 
-void DashboardView::render_settings(Canvas &c, const std::vector<Choice> &choices, const Status &s) {
-    const float W = float(c.width());
-    render_back(c, "Settings");
-    render_restart_button(c);
-    const Rect diagnostics = render_button(c, W - kMargin, 42, "Diagnostics", false);
-    hits_.push_back({Hit::OpenDiagnostics, diagnostics});
-    render_page_buttons(c, diagnostics.x - 16);
+// Gives the top and the height of the rows of a page. The rows get shorter when there are many, so that they stay
+// above the space at the bottom. If rows of 92 px do not fit, the rows start higher and can be as short as 80 px.
+DashboardView::RowLayout DashboardView::row_layout(const Canvas &c, size_t rows, float below) const {
+    const bool tight = float(c.height()) - below - 160 < 92.0f * float(rows);
+    const float top = tight ? 124 : 160, min_h = tight ? 80 : 92;
+    const float avail = float(c.height()) - below - top;
+    return {top, rows ? std::clamp(std::floor(avail / float(rows)), min_h, 124.0f) : 124};
+}
 
-    float y = 160;
+// Draws a row that opens another page, with a hint and a chevron.
+void DashboardView::render_link_row(Canvas &c, float y, float row_h, Icon icon, const std::string &label,
+                                    const std::string &hint, Hit::Kind kind) {
+    const float W = float(c.width()), d = (124 - row_h) / 2;
+    const Rect row{kMargin, y + 4, W - 2 * kMargin, row_h - 12};
+    c.fill_rect(row, hovered(row) ? kCardHover : kCard, 6);
+    render_icon(c, icon, kMargin + 20, y + row_h / 2 - 22, kMuted);
+    const float tx = kMargin + 80, chev_x = W - kMargin - 24, mid = y + row_h / 2 - 2;
+    medium_.draw(c, tx, y + 48 - d, label, 26, kText);
+    regular_.draw(c, tx, y + 83 - d, fit(regular_, hint, 21, chev_x - 28 - tx), 21, kMuted);
+    c.line(chev_x - 10, mid - 10, chev_x, mid, 3, kMuted);
+    c.line(chev_x, mid, chev_x - 10, mid + 10, 3, kMuted);
+    hits_.push_back({kind, row});
+}
+
+// Draws the choices of a page from y, and returns the y after the last row.
+float DashboardView::render_choice_rows(Canvas &c, float y, float row_h, const std::vector<Choice> &choices,
+                                        ChoicePage page, const Status &s) {
+    const float W = float(c.width()), d = (124 - row_h) / 2;
+    const float seg_h = std::min(64.0f, row_h - 28), seg_y = 26 - d + (64 - seg_h) / 2;   // The controls of a row.
     for (size_t i = 0; i < choices.size(); i++) {
         const Choice &ch = choices[i];
-        if (ch.diagnostics || (!ch.page.empty() && ch.page != "settings"))
-            continue;   // This row is on another page.
+        if (ch.page != page)
+            continue;
         if (ch.boolean) {
-            render_switch_row(c, y, i, ch);
-            y += 124;
+            render_switch_row(c, y, i, ch, row_h);
+            y += row_h;
             continue;
         }
-        const float tx = render_block(c, y, Icon::Rate);
-        const float seg_w = 128, seg_h = 64, pad = 4;
+        const float tx = render_block(c, y, Icon::Rate, row_h);
+        float seg_w = 128;   // The segments of a row grow to fit their widest label.
+        for (size_t k = 0; k < ch.options.size(); k++)
+            seg_w = std::max(seg_w, medium_.measure(k < ch.option_labels.size() ? ch.option_labels[k]
+                                                                                 : format_value(ch.options[k], ch.unit),
+                                                    24) + 32);
+        const float pad = 4;
         const float ctl_w = seg_w * float(ch.options.size()) + 2 * pad;
-        const Rect ctl{W - kMargin - 16 - ctl_w, y + 26, ctl_w, seg_h + 2 * pad};
+        const Rect ctl{W - kMargin - 16 - ctl_w, y + seg_y, ctl_w, seg_h + 2 * pad};
         const auto live = s.choice_hints.find(ch.id);
         const std::string &hint = live != s.choice_hints.end() ? live->second : ch.hint;
-        medium_.draw(c, tx, y + 48, fit(medium_, ch.label, 26, ctl.x - tx - 24), 26, kText);
-        regular_.draw(c, tx, y + 83, fit(regular_, hint, 21, ctl.x - tx - 24), 21, kMuted);
+        medium_.draw(c, tx, y + 48 - d, fit(medium_, ch.label, 26, ctl.x - tx - 24), 26, kText);
+        regular_.draw(c, tx, y + 83 - d, fit(regular_, hint, 21, ctl.x - tx - 24), 21, kMuted);
         c.fill_rect(ctl, kPanel, 4);
         for (size_t k = 0; k < ch.options.size(); k++) {
             const double v = ch.options[k];
@@ -407,24 +531,121 @@ void DashboardView::render_settings(Canvas &c, const std::vector<Choice> &choice
                          seg.y + (seg.h + medium_.cap_height(px)) / 2, label, px, selected ? kText : kMuted);
             hits_.push_back({Hit::Option, seg, i, v});
         }
-        y += 124;
+        y += row_h;
     }
+    return y;
+}
 
-    // Show the mouth source if there is a choice, and for USB a link to the camera page.
+void DashboardView::render_settings(Canvas &c, const std::vector<Choice> &choices, const Status &s) {
+    const float W = float(c.width());
+    render_back(c, "Settings");
+    render_restart_button(c);
+    hits_.push_back({Hit::OpenDiagnostics, render_button(c, W - kMargin, 42, "Diagnostics", false)});
+
+    // The Eye Tracking and Mouth Tracking rows show the current value of each setting on their page.
+    std::string eye, mouth;
+    for (const Choice &ch : choices) {
+        std::string *summary = eye_page(ch.page) ? &eye : ch.page == ChoicePage::Mouth ? &mouth : nullptr;
+        if (!summary)
+            continue;
+        *summary += (summary->empty() ? "" : "  ·  ") + ch.label + " " + choice_value(ch);
+    }
+    if (s.mouth_source_selectable)
+        mouth += std::string(mouth.empty() ? "" : "  ·  ") + (s.mouth_source == "usb" ? "USB camera" : "Headset");
+
+    size_t rows = (s.outputs.empty() ? 0 : 1) + (eye.empty() ? 0 : 1) + 1;
+    for (const Choice &ch : choices)
+        rows += ch.page == ChoicePage::Settings;
+    const RowLayout l = row_layout(c, rows, 130);
+    float y = l.top;
+    if (!s.outputs.empty()) {   // The Outputs row lists the outputs that are on.
+        std::string on;
+        for (const OutputModule &m : s.outputs)
+            if (m.on)
+                on += (on.empty() ? "" : ", ") + m.label;
+        render_link_row(c, y, l.row_h, Icon::Settings, "Outputs", on.empty() ? "All outputs are off." : "On: " + on,
+                        Hit::OpenOutputs);
+        y += l.row_h;
+    }
+    if (!eye.empty()) {
+        render_link_row(c, y, l.row_h, Icon::Eye, "Eye Tracking", eye, Hit::OpenEye);
+        y += l.row_h;
+    }
+    const nlohmann::json face_mode = setting("/sources/face/mode", "usb");
+    render_link_row(c, y, l.row_h, Icon::Mouth, "Mouth Tracking",
+                    !mouth.empty()        ? mouth
+                    : face_mode == "url" ? "Stream URL"
+                    : face_mode == "pc"  ? "PC App"
+                                         : "USB camera",
+                    Hit::OpenMouth);
+    y += l.row_h;
+    render_choice_rows(c, y, l.row_h, choices, ChoicePage::Settings, s);
+}
+
+// Draws the eye choices, and a row for each eye subpage that has choices: Data Sources and Modifiers.
+void DashboardView::render_eye_page(Canvas &c, const std::vector<Choice> &choices, const Status &s) {
+    render_back(c, "Eye Tracking");
+    const std::string sources = page_summary(choices, ChoicePage::EyeSources);
+    const std::string modifiers = page_summary(choices, ChoicePage::EyeModifiers);
+    const size_t rows = size_t(std::count_if(choices.begin(), choices.end(),
+                                             [](const Choice &ch) { return ch.page == ChoicePage::Eye; })) +
+                        !sources.empty() + !modifiers.empty() + 2;   // The fork's Eyes and Squint pages.
+    const RowLayout l = row_layout(c, rows, 130);
+    float y = render_choice_rows(c, l.top, l.row_h, choices, ChoicePage::Eye, s);
+    if (!sources.empty()) {
+        render_link_row(c, y, l.row_h, Icon::Eye, "Data Sources", sources, Hit::OpenEyeSources);
+        y += l.row_h;
+    }
+    if (!modifiers.empty()) {
+        render_link_row(c, y, l.row_h, Icon::Eye, "Modifiers", modifiers, Hit::OpenEyeModifiers);
+        y += l.row_h;
+    }
+    const std::string lids = page_summary(choices, ChoicePage::Eyelids);
+    render_link_row(c, y, l.row_h, Icon::Eye, "Eyelids & Gaze",
+                    "Manual ranges" + (lids.empty() ? "" : "  \u00b7  " + lids), Hit::Fork);
+    hits_.back().text = "page:eyes";
+    y += l.row_h;
+    const std::string squint = page_summary(choices, ChoicePage::Squint);
+    render_link_row(c, y, l.row_h, Icon::Eye, "Squint", squint.empty() ? "Squint calibration" : squint, Hit::Fork);
+    hits_.back().text = "page:squint";
+}
+
+void DashboardView::render_choice_page(Canvas &c, const char *title, const std::vector<Choice> &choices,
+                                       ChoicePage page, const Status &s) {
+    render_back(c, title);
+    const size_t rows =
+        size_t(std::count_if(choices.begin(), choices.end(), [&](const Choice &ch) { return ch.page == page; }));
+    const RowLayout l = row_layout(c, rows, 130);
+    render_choice_rows(c, l.top, l.row_h, choices, page, s);
+}
+
+void DashboardView::render_mouth_page(Canvas &c, const std::vector<Choice> &choices, const Status &s) {
+    const float W = float(c.width());
+    render_back(c, "Mouth Tracking");
     const bool selectable = s.mouth_source_selectable;
     const bool usb = !selectable || s.mouth_source == "usb";
+    size_t rows = selectable ? 1 : 0;
+    for (const Choice &ch : choices)
+        rows += ch.page == ChoicePage::Mouth;
+    const RowLayout l = row_layout(c, rows, 130 + (usb ? 84 : 0));
+    const float row_h = l.row_h, d = (124 - row_h) / 2;
+    const float seg_h = std::min(64.0f, row_h - 28), seg_y = 26 - d + (64 - seg_h) / 2;
+    float y = render_choice_rows(c, l.top, row_h, choices, ChoicePage::Mouth, s);
+
+    // Show the mouth source if there is a choice, and for USB a link to the camera page.
     if (selectable) {
-        const float tx = render_block(c, y, Icon::Mouth);
-        const float ctl_x = render_segments(c, W - kMargin - 16, y + 26, {"Headset", "USB"}, usb ? 1 : 0,
+        const float tx = render_block(c, y, Icon::Mouth, row_h);
+        const float ctl_x = render_segments(c, W - kMargin - 16, y + seg_y, {"Headset", "USB"}, usb ? 1 : 0,
                                            [&](size_t k, const Rect &r) {
                                                Hit h{Hit::MouthSource, r};
                                                h.text = k == 1 ? "usb" : "frunk";
                                                hits_.push_back(h);
-                                           });
-        medium_.draw(c, tx, y + 48, "Mouth Tracking Source", 26, kText);
-        regular_.draw(c, tx, y + 83,
+                                           },
+                                           seg_h);
+        medium_.draw(c, tx, y + 48 - d, "Mouth Tracking Source", 26, kText);
+        regular_.draw(c, tx, y + 83 - d,
                       fit(regular_, "Use the headset cameras or a USB camera.", 21, ctl_x - tx - 24), 21, kMuted);
-        y += 124;
+        y += row_h;
     }
     if (usb) {
         const Rect row{kMargin, y + 4, W - 2 * kMargin, 80};
@@ -498,7 +719,7 @@ Rect DashboardView::render_button(Canvas &c, float right, float y, const std::st
 // Draws an on/off setting row with a switch that a click near the switch changes.
 void DashboardView::render_switch_row(Canvas &c, float y, size_t index, const Choice &ch, float row_h) {
     const float W = float(c.width());
-    const float tx = render_block(c, y, Icon::Camera, row_h);
+    const float tx = render_block(c, y, eye_page(ch.page) ? Icon::Eye : Icon::Camera, row_h);
     const bool on = ch.value != 0;
     const float d = (124 - row_h) / 2;   // This offset keeps the content of short rows in the centre.
     const Rect sw{W - kMargin - 92, y + 36 - d, 92, 52};
@@ -604,7 +825,7 @@ void DashboardView::render_diagnostics(Canvas &c, const std::vector<Choice> &cho
         y += kRow;
     }
     for (size_t i = 0; i < choices.size(); i++) {
-        if (!choices[i].diagnostics || !choices[i].boolean)
+        if (choices[i].page != ChoicePage::Diagnostics || !choices[i].boolean)
             continue;
         render_switch_row(c, y, i, choices[i], kRow);
         y += kRow;
@@ -626,26 +847,119 @@ void DashboardView::render_diagnostics(Canvas &c, const std::vector<Choice> &cho
     }
 }
 
+float DashboardView::render_text_field(Canvas &c, float right, float y, const std::string &id, const std::string &shown) {
+    const Rect r = render_button(c, right, y, shown, false, true);
+    Hit h{Hit::EditText, r};
+    h.text = id;
+    hits_.push_back(h);
+    return r.x;
+}
+
+// Draws the PC address and one row for each output module, with its switch, its settings and its status.
+void DashboardView::render_outputs(Canvas &c, const Status &s) {
+    const float W = float(c.width());
+    render_back(c, "Outputs");
+    if (!s.output_error.empty())
+        regular_.draw(c, kMargin, 142, fit(regular_, s.output_error, 21, W - 2 * kMargin), 21, kRed);
+
+    const float bottom = float(c.height()) - 130;   // Keep the corner of the cog clear.
+    const float row_h = std::clamp(std::floor((bottom - 160) / float(s.outputs.size() + 1)), 92.0f, 116.0f);
+    const float d = (124 - row_h) / 2;
+    auto hit_setting = [&](const Rect &r, const std::string &id, const std::string &json) {
+        Hit h{Hit::OutputSetting, r};
+        h.text = id;
+        h.json = json;
+        hits_.push_back(h);
+    };
+
+    float y = 160;
+    {
+        const float tx = render_block(c, y, Icon::Settings, row_h);
+        float left = render_text_field(c, W - kMargin - 16, y + 30 - d, "/pc_address",
+                                       s.pc_address.empty() ? "Steam Link Host" : s.pc_address);
+        if (!s.pc_address.empty()) {
+            const Rect clear = render_button(c, left - 16, y + 30 - d, "Clear", false, true);
+            hit_setting(clear, "/pc_address", "\"\"");
+            left = clear.x;
+        }
+        medium_.draw(c, tx, y + 48 - d, "PC Address", 26, kText);
+        regular_.draw(c, tx, y + 83 - d,
+                      fit(regular_,
+                          s.pc_address.empty() ? "Found from Steam Link. For WiVRn, ALVR or others, enter your PC's IP."
+                                               : "Used instead of the Steam Link host.",
+                          21,
+                          left - tx - 24),
+                      21, kMuted);
+        y += row_h;
+    }
+    for (const OutputModule &m : s.outputs) {
+        if (y + row_h > bottom + 12)
+            break;
+        c.fill_rect({kMargin, y + 4, W - 2 * kMargin, row_h - 12}, kCard, 6);
+        const float tx = kMargin + 28;
+        const Rect sw{W - kMargin - 16 - 92, y + 36 - d, 92, 52};
+        const Rect sw_hit{sw.x - 12, y + 4, W - kMargin - (sw.x - 12), row_h - 12};
+        // When the switch is on, its colour shows if the output works, as for the eye and mouth feeds.
+        render_switch(c, sw, m.on, hovered(sw_hit), m.ok ? kGreen : kAmber);
+        hit_setting(sw_hit, "/outputs/" + m.id, m.on ? "false" : "true");
+        float left = sw_hit.x - 12;
+        for (auto it = m.options.rbegin(); it != m.options.rend(); ++it) {
+            const ModuleOption &o = *it;
+            if (o.text) {
+                left = render_text_field(c, left, y + 30 - d, o.id, o.value) - 16;
+                continue;
+            }
+            const float seg_w = 96, seg_h = 56, pad = 4;
+            const float ctl_w = seg_w * float(o.values.size()) + 2 * pad;
+            const Rect ctl{left - ctl_w, y + 30 - d, ctl_w, seg_h + 2 * pad};
+            c.fill_rect(ctl, kPanel, 4);
+            for (size_t k = 0; k < o.values.size(); k++) {
+                const Rect seg{ctl.x + pad + float(k) * seg_w, ctl.y + pad, seg_w, seg_h};
+                const bool on = o.values[k] == o.value;
+                if (on || hovered(seg))
+                    c.fill_rect(seg, on ? kAccent : kCardHover, 3);
+                const std::string label = k < o.labels.size() ? o.labels[k] : o.values[k];
+                const float px = 22;
+                medium_.draw(c, seg.x + (seg.w - medium_.measure(label, px)) / 2,
+                             seg.y + (seg.h + medium_.cap_height(px)) / 2, label, px, on ? kText : kMuted);
+                hit_setting(seg, o.id, o.values[k]);
+            }
+            left = ctl.x - 16;
+        }
+        medium_.draw(c, tx, y + 48 - d, fit(medium_, m.label, 26, left - tx - 8), 26, kText);
+        const std::string &line = m.on && !m.status.empty() ? m.status : m.hint;
+        regular_.draw(c, tx, y + 83 - d, fit(regular_, line, 21, left - tx - 8), 21, kMuted);
+        y += row_h;
+    }
+}
+
 // Draws the USB camera page with the automatic choice and each camera from the last refresh.
-void DashboardView::render_cameras(Canvas &c, const Status &s) {
+void DashboardView::render_cameras(Canvas &c, const std::vector<Choice> &choices, const Status &s) {
     const float W = float(c.width());
     render_back(c, "USB Camera");
 
     hits_.push_back({Hit::Refresh, render_button(c, W - kMargin, 42, "Refresh", false)});
 
+    float y = 150;
+    for (size_t i = 0; i < choices.size(); i++)   // The camera settings, such as the mirror, come first.
+        if (choices[i].page == ChoicePage::Cameras && choices[i].boolean) {
+            render_switch_row(c, y, i, choices[i], 104);
+            y += 104;
+        }
+
     struct Row {
         std::string id, label, detail;
+        bool options = false;   // True if the row has a button that opens the options of the camera.
     };
     std::vector<Row> rows{{"", "Automatic", "Use a connected Babble tracker, or the first available camera."}};
     for (const auto &cam : s.cameras)
-        rows.push_back({cam.id, cam.label, cam.detail});
+        rows.push_back({cam.id, cam.label, cam.detail + (cam.iso ? " \u00b7 isochronous" : ""), true});
     const bool selected_missing =
         !s.camera.empty() &&
         std::none_of(s.cameras.begin(), s.cameras.end(), [&](const UsbCamera &cam) { return cam.id == s.camera; });
     if (selected_missing)
         rows.push_back({s.camera, "Selected camera", s.camera + " \u00b7 not connected"});
 
-    float y = 150;
     const float row_h = 92;
     for (const Row &r : rows) {
         if (y + row_h > float(c.height()) - 150)
@@ -659,6 +973,18 @@ void DashboardView::render_cameras(Canvas &c, const Status &s) {
         }
         const float tx = box.x + 84;
         float right = box.x + box.w - 24;
+        if (r.options) {   // The options button comes first, so that its hit wins over the row.
+            const Rect opt{box.x + box.w - 96, box.y + 8, 88, box.h - 16};
+            if (hovered(opt))
+                c.fill_rect(opt, kOnCardHover, 4);
+            const float cx = opt.x + opt.w / 2 + 4, cy = opt.y + opt.h / 2;
+            c.line(cx - 6, cy - 12, cx + 6, cy, 3, kMuted);
+            c.line(cx + 6, cy, cx - 6, cy + 12, 3, kMuted);
+            Hit h{Hit::OpenCameraOptions, opt};
+            h.text = r.id;
+            hits_.push_back(h);
+            right = opt.x - 16;
+        }
         const bool streaming = !r.id.empty() && r.id == s.active_camera;
         const bool auto_streaming = r.id.empty() && s.camera.empty() && !s.active_camera.empty();
         if (streaming || auto_streaming) {
@@ -677,6 +1003,210 @@ void DashboardView::render_cameras(Canvas &c, const Status &s) {
     }
     if (s.cameras.empty())
         regular_.draw(c, kMargin, y + 40, "No USB cameras found. Connect a camera, then select Refresh.", 26, kMuted);
+}
+
+// Draws the options of one USB camera: a live preview at the left, and rotation, flips, format, resolution and frame
+// rate at the right.
+void DashboardView::render_camera_options(Canvas &c, const Status &s) {
+    const float W = float(c.width());
+    const auto it = std::find_if(s.cameras.begin(), s.cameras.end(),
+                                 [&](const UsbCamera &cam) { return cam.id == options_camera_; });
+    if (it == s.cameras.end()) {
+        render_back(c, "Camera Options");
+        regular_.draw(c, kMargin, 200, "This camera is not connected. Connect it, then select Refresh on the camera list.",
+                      26, kMuted);
+        return;
+    }
+    const UsbCamera &cam = *it;
+    render_back(c, fit(medium_, cam.label, 32, W - 2 * kMargin - 120).c_str());
+    const std::string id = camera_setting_id(cam.id);
+    const UsbCamera::Settings &cur = cam.settings;
+
+    // The preview box has the 4:3 shape of most cameras, and the image keeps its own shape inside it.
+    const Rect box{kMargin, 124, 400, 300};
+    c.fill_rect(box, kPanel, 6);
+    const CameraPreview *pv = s.preview && s.preview->camera == cam.id && !s.preview->gray.empty() ? s.preview : nullptr;
+    if (pv) {
+        Image img;
+        img.width = pv->width;
+        img.height = pv->height;
+        img.rgba.resize(size_t(pv->width) * pv->height * 4);
+        for (size_t i = 0; i < pv->gray.size(); i++) {
+            uint8_t *px = &img.rgba[i * 4];
+            px[0] = px[1] = px[2] = pv->gray[i];
+            px[3] = 255;
+        }
+        c.image(img, int(box.x + (box.w - float(pv->width)) / 2), int(box.y + (box.h - float(pv->height)) / 2), 4);
+    } else {
+        const std::string note = cam.id == s.active_camera ? "Waiting for the camera\u2026" : "No preview";
+        medium_.draw(c, box.x + (box.w - medium_.measure(note, 24)) / 2, box.y + box.h / 2 + 8, note, 24, kMuted);
+    }
+    std::string info = cur.width ? size_label(cur.width, cur.height) : "";
+    if (const auto *f = find_format(cam, cur.format))
+        info += (info.empty() ? "" : "  \u00b7  ") + f->label;
+    if (cur.fps)
+        info += "  \u00b7  " + std::to_string(cur.fps) + " fps";
+    regular_.draw(c, box.x, box.y + box.h + 34, fit(regular_, info, 22, box.w), 22, kText);
+    const std::string hint = cam.id == s.active_camera
+                                 ? "The image after rotation and flips, as the model sees it."
+                                 : "The preview shows while this camera is in use. Select it on the camera list.";
+    // Break the hint into lines that fit under the box.
+    float hy = box.y + box.h + 66;
+    std::string line;
+    size_t pos = 0;
+    while (pos <= hint.size()) {
+        size_t next = hint.find(' ', pos);
+        if (next == std::string::npos)
+            next = hint.size();
+        const std::string word = hint.substr(pos, next - pos);
+        const std::string tryline = line.empty() ? word : line + " " + word;
+        if (!line.empty() && regular_.measure(tryline, 20) > box.w) {
+            regular_.draw(c, box.x, hy, line, 20, kMuted);
+            hy += 28;
+            line = word;
+        } else {
+            line = tryline;
+        }
+        pos = next + 1;
+    }
+    if (!line.empty())
+        regular_.draw(c, box.x, hy, line, 20, kMuted);
+
+    auto emit = [&](const Rect &r, UsbCamera::Settings next) {
+        fit_mode(cam, next);
+        Hit h{Hit::OutputSetting, r};
+        h.text = id;
+        h.json = settings_json(next);
+        hits_.push_back(h);
+    };
+    const UsbCamera::Size *size = find_size(cam, cur);
+    // The rows fill the space at the right of the preview.
+    const float left = box.x + box.w + 20, right = W - kMargin, row_h = 82, seg_h = 54;
+    float y = 124;
+    auto card = [&] {
+        c.fill_rect({left, y + 4, right - left, row_h - 12}, kCard, 6);
+    };
+    auto label = [&](const std::string &text, float max_right) {
+        medium_.draw(c, left + 20, y + row_h / 2 + 8, fit(medium_, text, 26, max_right - left - 32), 26, kText);
+    };
+    auto segment_row = [&](const std::string &name, const std::vector<std::string> &labels, int selected, float seg_w,
+                           const std::function<UsbCamera::Settings(size_t)> &pick) {
+        card();
+        const float l = render_segments(c, right - 12, y + (row_h - 8 - seg_h) / 2 - 2, labels, selected,
+                                        [&](size_t k, const Rect &r) { emit(r, pick(k)); }, seg_h, seg_w);
+        label(name, l);
+        y += row_h;
+    };
+    auto switch_row = [&](const std::string &name, bool on, const std::function<UsbCamera::Settings(bool)> &pick) {
+        card();
+        const Rect sw{right - 12 - 92, y + (row_h - 8 - 52) / 2, 92, 52};
+        const Rect hit{sw.x - 24, y, right - (sw.x - 24), row_h};
+        render_switch(c, sw, on, hovered(hit));
+        emit(hit, pick(!on));
+        label(name, hit.x);
+        y += row_h;
+    };
+
+    const int rotations[] = {0, 90, 180, 270};
+    segment_row("Rotation", {"0\u00b0", "90\u00b0", "180\u00b0", "270\u00b0"},
+                int(std::find(std::begin(rotations), std::end(rotations), cur.rotate) - std::begin(rotations)), 96,
+                [&](size_t k) {
+                    auto n = cur;
+                    n.rotate = rotations[k];
+                    return n;
+                });
+    switch_row("Horizontal Flip", cur.flip_h, [&](bool on) {
+        auto n = cur;
+        n.flip_h = on;
+        return n;
+    });
+    switch_row("Vertical Flip", cur.flip_v, [&](bool on) {
+        auto n = cur;
+        n.flip_v = on;
+        return n;
+    });
+    std::vector<std::string> formats;
+    int selected = -1;
+    for (size_t k = 0; k < cam.formats.size(); k++) {
+        formats.push_back(cam.formats[k].label);
+        if (cam.formats[k].key == cur.format)
+            selected = int(k);
+    }
+    segment_row("Format", formats, selected, 96, [&](size_t k) {
+        auto n = cur;
+        n.format = cam.formats[k].key;
+        return n;
+    });
+    {
+        const Rect row{left, y + 4, right - left, row_h - 12};
+        c.fill_rect(row, hovered(row) ? kCardHover : kCard, 6);
+        const float chev_x = right - 24, mid = y + row_h / 2 - 2;
+        const std::string value = cur.width ? size_label(cur.width, cur.height) : "Unknown";
+        const float vw = medium_.measure(value, 24);
+        medium_.draw(c, chev_x - 28 - vw, mid + medium_.cap_height(24) / 2, value, 24, kText);
+        label("Resolution", chev_x - 28 - vw);
+        c.line(chev_x - 10, mid - 10, chev_x, mid, 3, kMuted);
+        c.line(chev_x, mid, chev_x - 10, mid + 10, 3, kMuted);
+        hits_.push_back({Hit::OpenResolution, row});
+        y += row_h;
+    }
+    std::vector<std::string> rates;
+    std::vector<int> fps = size ? size->fps : std::vector<int>{};
+    if (fps.size() > 5)
+        fps.resize(5);
+    selected = -1;
+    for (size_t k = 0; k < fps.size(); k++) {
+        rates.push_back(std::to_string(fps[k]));
+        if (fps[k] == cur.fps)
+            selected = int(k);
+    }
+    segment_row("Frame Rate", rates, selected, 80, [&](size_t k) {
+        auto n = cur;
+        n.fps = fps[k];
+        return n;
+    });
+}
+
+// Draws the frame sizes of the format that the camera uses, as a list with a check mark at the current size.
+void DashboardView::render_camera_resolution(Canvas &c, const Status &s) {
+    const float W = float(c.width());
+    render_back(c, "Resolution");
+    const auto it = std::find_if(s.cameras.begin(), s.cameras.end(),
+                                 [&](const UsbCamera &cam) { return cam.id == options_camera_; });
+    if (it == s.cameras.end())
+        return;
+    const UsbCamera &cam = *it;
+    const UsbCamera::Format *f = find_format(cam, cam.settings.format);
+    if (!f)
+        return;
+    const float row_h = 80;
+    float y = 140;
+    for (const auto &z : f->sizes) {
+        if (y + row_h > float(c.height()) - 130)
+            break;   // Keep the corner of the cog clear.
+        const Rect box{kMargin, y, W - 2 * kMargin, row_h - 10};
+        const bool on = z.width == cam.settings.width && z.height == cam.settings.height;
+        c.fill_rect(box, on || hovered(box) ? kCardHover : kCard, 6);
+        if (on) {
+            c.line(box.x + 26, box.y + 36, box.x + 38, box.y + 48, 5, kAccent);
+            c.line(box.x + 38, box.y + 48, box.x + 60, box.y + 22, 5, kAccent);
+        }
+        medium_.draw(c, box.x + 84, box.y + 46, size_label(z.width, z.height), 28, kText);
+        std::string rates;
+        for (int r : z.fps)
+            rates += (rates.empty() ? "" : ", ") + std::to_string(r);
+        const std::string detail = rates.empty() ? "" : rates + " fps";
+        regular_.draw(c, box.x + box.w - 24 - regular_.measure(detail, 22), box.y + 44, detail, 22, kMuted);
+        auto next = cam.settings;
+        next.width = z.width;
+        next.height = z.height;
+        fit_mode(cam, next);
+        Hit h{Hit::OutputSetting, box};
+        h.text = camera_setting_id(cam.id);
+        h.json = settings_json(next);
+        hits_.push_back(h);
+        y += row_h;
+    }
 }
 
 void DashboardView::render_cog(Canvas &c) {
@@ -730,11 +1260,28 @@ DashboardView::ClickResult DashboardView::click(Point p) {
             break;
         case Hit::Back:
             restart_armed_until_ns_ = 0;
-            if (page_ == Page::Resolution || (page_ == Page::Cameras && fork_.cameras_from_mouth))
-                page_ = Page::Mouth;
-            else
-                page_ = page_ == Page::Cameras || page_ == Page::Diagnostics || live_page() ? Page::Settings : Page::Home;
+            page_ = page_ == Page::EyeSources || page_ == Page::EyeModifiers ? Page::Eye
+                    : page_ == Page::Eyes || page_ == Page::Squint ? Page::Eye
+                    : page_ == Page::CameraResolution ? Page::CameraOptions
+                    : page_ == Page::CameraOptions  ? Page::Cameras
+                    : page_ == Page::Cameras || page_ == Page::Resolution ? Page::Mouth
+                    : page_ == Page::Settings       ? Page::Home
+                                                    : Page::Settings;
             out.redraw = true;
+            break;
+        case Hit::OpenOutputs:
+        case Hit::OpenEye:
+        case Hit::OpenMouth:
+            restart_armed_until_ns_ = 0;
+            page_ = h.kind == Hit::OpenEye ? Page::Eye : h.kind == Hit::OpenMouth ? Page::Mouth : Page::Outputs;
+            out.redraw = true;
+            break;
+        case Hit::OutputSetting:
+            out.output_setting = std::make_pair(h.text, h.json);
+            out.redraw = true;
+            break;
+        case Hit::EditText:
+            out.edit_text = h.text;
             break;
         case Hit::OpenDiagnostics:
             restart_armed_until_ns_ = 0;
@@ -777,12 +1324,25 @@ DashboardView::ClickResult DashboardView::click(Point p) {
         case Hit::OpenCameras:
             restart_armed_until_ns_ = 0;
             page_ = Page::Cameras;
-            fork_.cameras_from_mouth = false;
             out.refresh_cameras = true;   // Show the cameras that are connected now.
             out.redraw = true;
             break;
         case Hit::Camera:
             out.camera = h.text;
+            out.redraw = true;
+            break;
+        case Hit::OpenCameraOptions:
+            options_camera_ = h.text;
+            page_ = Page::CameraOptions;
+            out.redraw = true;
+            break;
+        case Hit::OpenResolution:
+            page_ = Page::CameraResolution;
+            out.redraw = true;
+            break;
+        case Hit::OpenEyeSources:
+        case Hit::OpenEyeModifiers:
+            page_ = h.kind == Hit::OpenEyeSources ? Page::EyeSources : Page::EyeModifiers;
             out.redraw = true;
             break;
         case Hit::Refresh:

@@ -19,7 +19,8 @@ target_include_directories(driver_babble SYSTEM PRIVATE
 target_include_directories(driver_babble PRIVATE ${BABBLE_GENERATED_DIR})   # This directory has babble_version.h.
 add_dependencies(driver_babble babble_version)
 target_compile_options(driver_babble PRIVATE -Wall -Wextra)
-target_link_options(driver_babble PRIVATE -Wl,--no-undefined -static-libstdc++ -static-libgcc)
+target_link_options(driver_babble PRIVATE -Wl,--no-undefined -static-libstdc++ -static-libgcc
+    $<$<CONFIG:Release>:-Wl,--strip-all>)
 target_link_libraries(driver_babble PRIVATE dl pthread)
 set_target_properties(driver_babble PROPERTIES PREFIX "")
 
@@ -28,7 +29,8 @@ add_executable(babble_setup src/babble_setup.cpp)
 target_include_directories(babble_setup SYSTEM PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/nlohmann_json/single_include)
 target_compile_options(babble_setup PRIVATE -Wall -Wextra)
-target_link_options(babble_setup PRIVATE -static-libstdc++ -static-libgcc)
+target_link_options(babble_setup PRIVATE -static-libstdc++ -static-libgcc
+    $<$<CONFIG:Release>:-Wl,--strip-all>)
 set_target_properties(babble_setup PROPERTIES OUTPUT_NAME babble-setup)
 
 # Put all the parts of the SteamVR driver folder in build/babble.
@@ -53,7 +55,7 @@ endforeach()
 
 # Package only the runtime resources and models that the pipelines of the profile load.
 set(runtime_res ${CMAKE_CURRENT_SOURCE_DIR}/../runtime/resources)
-set(BABBLE_PACKAGED_MODELS eye_split96_uncapped_fp16.pte face_mono_224_fp16.pte)
+set(BABBLE_PACKAGED_MODELS eye_kit_stage1_fp16.pte eye_kit_stage2_fp16.pte face_mono_224_fp16.pte)
 set(BABBLE_PACKAGED_FILES)
 if(BABBLE_FRUNK_MOUTH)
     list(APPEND BABBLE_PACKAGED_MODELS fusionnet_int8_xnnpack_qat_linear.pte)

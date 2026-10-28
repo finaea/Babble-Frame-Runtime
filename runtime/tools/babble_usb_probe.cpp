@@ -1,6 +1,4 @@
-// Streams a Babble face tracker or another UVC camera (MJPEG or YUYV, bulk or isochronous) over usbfs for a few seconds
-// and reports what arrives.
-#include "camera/usb/jpeg.h"
+// Streams a Babble face tracker or another UVC camera over usbfs for a few seconds and reports what arrives.
 #include "camera/usb/uvc_camera.h"
 #include "core/clock.h"
 
@@ -16,8 +14,9 @@ using namespace babble;
 int main(int argc, char **argv) {
     double seconds = 5, fps = 0;
     int save_count = 0;
-    std::string save_dir, format = "mjpeg";
-    unsigned vid = 0x303a, pid = 0x8000, width = 240, height = 240;
+    std::string save_dir;
+    unsigned vid = 0x303a, pid = 0x8000;
+    uvc::Mode mode{uvc::FormatKind::Mjpeg, 240, 240, 0};
     for (int i = 1; i + 1 < argc; i += 2) {
         const std::string a = argv[i];
         if (a == "--seconds") seconds = atof(argv[i + 1]);
@@ -26,9 +25,9 @@ int main(int argc, char **argv) {
         else if (a == "--vid") vid = unsigned(strtoul(argv[i + 1], nullptr, 16));
         else if (a == "--pid") pid = unsigned(strtoul(argv[i + 1], nullptr, 16));
         else if (a == "--fps") fps = atof(argv[i + 1]);
-        else if (a == "--format") format = argv[i + 1];   // auto, mjpeg or yuyv.
-        else if (a == "--width") width = unsigned(atoi(argv[i + 1]));
-        else if (a == "--height") height = unsigned(atoi(argv[i + 1]));
+        else if (a == "--width") mode.width = uint16_t(atoi(argv[i + 1]));
+        else if (a == "--height") mode.height = uint16_t(atoi(argv[i + 1]));
+        else if (a == "--format") mode.format = uvc::format_from_key(argv[i + 1]);
     }
     if (!save_dir.empty() && !save_count)
         save_count = 10;
@@ -44,35 +43,26 @@ int main(int argc, char **argv) {
 
     uvc::Camera cam;
     std::string err;
-    if (!cam.open(dev, format, uint16_t(width), uint16_t(height), fps, &err)) {
+    mode.fps = fps;
+    if (!cam.open(dev, mode, &err)) {
         fprintf(stderr, "open%s: %s\n", cam.busy() ? " (busy)" : "", err.c_str());
         return 1;
     }
     const auto &info = cam.info();
     const auto &p = cam.negotiated();
-    printf("UVC %x.%02x  control if %u, stream if %u, endpoint 0x%02x (%s, alt %u)\n", info.bcd_uvc >> 8,
-           info.bcd_uvc & 0xff, info.control_iface, info.stream_iface, info.endpoint, info.bulk ? "bulk" : "iso",
-           unsigned(cam.iso_alt()));
-    printf("negotiated %s %ux%u, %.1f fps, max frame %u B, max payload %u B\n", cam.yuyv() ? "YUYV" : "MJPEG",
-           cam.frame_size().width, cam.frame_size().height, p.frame_interval ? 1e7 / p.frame_interval : 0.0,
-           p.max_video_frame_size, p.max_payload_transfer_size);
+    printf("UVC %x.%02x  control if %u, stream if %u, endpoint 0x%02x (%s, %u B packets)\n", info.bcd_uvc >> 8,
+           info.bcd_uvc & 0xff, info.control_iface, info.stream_iface, info.endpoint,
+           cam.iso() ? ("iso alt " + std::to_string(cam.iso_alt())).c_str() : "bulk", info.endpoint_max_packet);
+    printf("negotiated %s %ux%u, %.1f fps, max frame %u B, max payload %u B\n", uvc::format_label(cam.format()),
+           cam.frame_size().width,
+           cam.frame_size().height, p.frame_interval ? 1e7 / p.frame_interval : 0.0, p.max_video_frame_size,
+           p.max_payload_transfer_size);
     if (!save_dir.empty())
         std::filesystem::create_directories(save_dir);
 
-    std::vector<uint8_t> gray(1024 * 1024);
-    int frames = 0, bad = 0, saved = 0, saved_bad = 0;
+    std::vector<uint8_t> gray(1920 * 1080);
+    int frames = 0, bad = 0, saved = 0;
     size_t bytes = 0;
-    // Saves the raw bytes of a bad frame, so that its start and end can be read.
-    auto save_bad = [&](const uint8_t *d, size_t n) {
-        if (save_dir.empty() || saved_bad >= save_count)
-            return;
-        char path[512];
-        snprintf(path, sizeof(path), "%s/bad_%03d.bin", save_dir.c_str(), saved_bad++);
-        if (FILE *f = fopen(path, "wb")) {
-            fwrite(d, 1, n, f);
-            fclose(f);
-        }
-    };
     const uint64_t t0 = mono_ns(), end = t0 + uint64_t(seconds * 1e9);
     uint64_t first = 0, last = 0;
     while (mono_ns() < end) {
@@ -84,27 +74,18 @@ int main(int argc, char **argv) {
             frames++;
             bytes += n;
             int w = 0, h = 0;
-            if (cam.yuyv()) {
-                w = cam.frame_size().width;
-                h = cam.frame_size().height;
-                if (!uvc::yuyv_to_gray(d, n, uint32_t(w), uint32_t(h), gray.data())) {
-                    bad++;
-                    save_bad(d, n);
-                    return;
-                }
-            } else if (!uvc::looks_like_jpeg(d, n) || !jpeg::decode_gray(d, n, gray.data(), gray.size(), &w, &h)) {
+            if (!uvc::to_gray(cam.format(), d, n, cam.frame_size().width, cam.frame_size().height, gray.data(),
+                              gray.size(), &w, &h)) {
                 bad++;
-                save_bad(d, n);
                 return;
             }
             if (saved < save_count) {
                 char path[512];
-                if (!cam.yuyv()) {
-                    snprintf(path, sizeof(path), "%s/frame_%03d.jpg", save_dir.c_str(), saved);
-                    if (FILE *f = fopen(path, "wb")) {
-                        fwrite(d, 1, n, f);
-                        fclose(f);
-                    }
+                snprintf(path, sizeof(path), "%s/frame_%03d.%s", save_dir.c_str(), saved,
+                         cam.format() == uvc::FormatKind::Mjpeg ? "jpg" : "raw");
+                if (FILE *f = fopen(path, "wb")) {
+                    fwrite(d, 1, n, f);
+                    fclose(f);
                 }
                 snprintf(path, sizeof(path), "%s/frame_%03d.pgm", save_dir.c_str(), saved);
                 if (FILE *f = fopen(path, "wb")) {

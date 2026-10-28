@@ -7,7 +7,9 @@
 #include <openvr.h>
 
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <cstdlib>
 
 namespace {
 const babble::log::Logger LOG("ui");
@@ -52,22 +54,11 @@ void Dashboard::stop() {
     pointer_.reset();
     hover_ = -1;
     view_.set_page(DashboardView::Page::Home);
-    if (options_.preview)
-        options_.preview->set_open(false);
+    if (options_.frame_preview)
+        options_.frame_preview->set_open(false);
 }
 
 void Dashboard::release_gpu() { gpu_.release(); }
-
-void Dashboard::show_keyboard(const std::string &text) {
-    vr::EVROverlayError err = vr::VROverlayError_None;
-    vr_->with_vr([&] {
-        err = vr::VROverlay()->ShowKeyboardForOverlay(main_, vr::k_EGamepadTextInputModeNormal,
-                                                      vr::k_EGamepadTextInputLineModeSingleLine, vr::KeyboardFlag_Modal,
-                                                      "Stream URL", 500, text.c_str(), 0);
-    });
-    if (err != vr::VROverlayError_None)
-        LOG.warn("dashboard: opening the keyboard failed (%d)", int(err));
-}
 
 void Dashboard::set_status(const Status &s) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -85,10 +76,9 @@ void Dashboard::set_status(const Status &s) {
         s.camera != status_.camera || s.active_camera != status_.active_camera ||
         s.verbose_minutes_left != status_.verbose_minutes_left || s.last_diagnostics != status_.last_diagnostics ||
         s.log_file != status_.log_file || s.choice_hints != status_.choice_hints || s.capture != status_.capture ||
-        s.update != status_.update ||
-        s.cameras.size() != status_.cameras.size() ||
-        !std::equal(s.cameras.begin(), s.cameras.end(), status_.cameras.begin(),
-                    [](const UsbCamera &a, const UsbCamera &b) { return a.id == b.id && a.label == b.label; }))
+        s.update != status_.update || s.link.native != status_.link.native || s.link.osc != status_.link.osc ||
+        s.link.more != status_.link.more || s.outputs != status_.outputs || s.pc_address != status_.pc_address ||
+        s.output_error != status_.output_error || s.cameras != status_.cameras)
         dirty_ = true;
     status_ = s;
 }
@@ -107,6 +97,84 @@ void Dashboard::set_config(const nlohmann::json &cfg) {
     std::lock_guard<std::mutex> lock(mutex_);
     config_ = std::move(copy);
     dirty_ = true;
+}
+
+void Dashboard::set_choice_text(const std::string &id, const std::string &value) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto &c : choices_) {
+        if (c.id != id)
+            continue;
+        const auto it = std::find(c.text_values.begin(), c.text_values.end(), value);
+        const double index = it == c.text_values.end() ? -1 : double(it - c.text_values.begin());
+        if (c.value != index) {
+            c.value = index;
+            dirty_ = true;
+        }
+    }
+}
+
+// Shows a choice on the Outputs page or the camera options page immediately, and sends it to the main thread, which
+// confirms it.
+void Dashboard::apply_output_setting(const std::string &id, const nlohmann::json &value) {
+    for (OutputModule &m : status_.outputs) {
+        if (id == "/outputs/" + m.id && value.is_boolean())
+            m.on = value.get<bool>();
+        for (ModuleOption &o : m.options)
+            if (o.id == id)
+                o.value = o.text ? (value.is_string() ? value.get<std::string>() : value.dump()) : value.dump();
+    }
+    if (id == "/pc_address" && value.is_string())
+        status_.pc_address = value.get<std::string>();
+    for (UsbCamera &cam : status_.cameras) {
+        if (id != camera_setting_id(cam.id) || !value.is_object())
+            continue;
+        UsbCamera::Settings &s = cam.settings;
+        s.format = value.value("format", s.format);
+        s.width = value.value("width", s.width);
+        s.height = value.value("height", s.height);
+        s.fps = value.value("fps", s.fps);
+        s.rotate = value.value("rotate", s.rotate);
+        s.flip_h = value.value("flip_h", s.flip_h);
+        s.flip_v = value.value("flip_v", s.flip_v);
+    }
+    changes_.emplace_back(id, value);
+    dirty_ = true;
+}
+
+// Opens the SteamVR keyboard on the tab with the current text of the setting.
+void Dashboard::open_keyboard(const std::string &id) {
+    std::string label = "PC Address", current;
+    bool numeric = false;
+    uint32_t max_chars = 64;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        current = status_.pc_address;
+        if (id == "/sources/face/url") {   // The fork's Mouth page edits the stream URL.
+            label = "Stream URL";
+            max_chars = 500;
+            const nlohmann::json::json_pointer ptr(id);
+            current = config_ && config_->contains(ptr) && (*config_)[ptr].is_string() ? (*config_)[ptr].get<std::string>() : "";
+        }
+        for (const OutputModule &m : status_.outputs)
+            for (const ModuleOption &o : m.options)
+                if (o.id == id) {
+                    label = m.label + " " + o.label;
+                    current = o.value;
+                    numeric = o.numeric;
+                }
+    }
+    vr::EVROverlayError err = vr::VROverlayError_None;
+    vr_->with_vr([&] {
+        err = vr::VROverlay()->ShowKeyboardForOverlay(main_, vr::k_EGamepadTextInputModeNormal,
+                                                       vr::k_EGamepadTextInputLineModeSingleLine,
+                                                       vr::KeyboardFlag_Modal, label.c_str(), max_chars, current.c_str(), 0);
+    });
+    if (err != vr::VROverlayError_None) {
+        LOG.warn("dashboard: cannot open the keyboard for %s (%d)", id.c_str(), int(err));
+        return;
+    }
+    editing_id_ = id;
+    editing_numeric_ = numeric;
 }
 
 std::vector<std::pair<std::string, nlohmann::json>> Dashboard::take_changes() {
@@ -217,8 +285,8 @@ PageData Dashboard::read_page_data() {
             if (snap.signals[i].t_ns != 0)
                 d.signals[snap.names[i]] = {snap.signals[i].value, now - snap.signals[i].t_ns < 1000000000ull};
     }
-    if (options_.preview && view_.page() == DashboardView::Page::Mouth)
-        d.preview = options_.preview->latest();
+    if (options_.frame_preview && view_.page() == DashboardView::Page::Mouth)
+        d.preview = options_.frame_preview->latest();
     return d;
 }
 
@@ -234,6 +302,8 @@ void Dashboard::present() {
     status.eyes = drawn_eyes_ = read_eyes();
     if (view_.live_page())
         view_.set_page_data(read_page_data());
+    if (view_.page() == DashboardView::Page::CameraOptions && !preview_.gray.empty())
+        status.preview = &preview_;
     last_present_ns_ = mono_ns();
     view_.render(canvas_, status, choices, pointer_);
 
@@ -277,7 +347,7 @@ void Dashboard::run() {
 
         bool redraw = false;
         std::vector<Point> clicks, releases;
-        std::optional<std::string> typed;   // The text from the SteamVR keyboard.
+        std::optional<std::pair<std::string, std::string>> typed;   // The setting id and the text from the keyboard.
         vr_->with_vr([&] {
             vr::VREvent_t ev;
             while (vr::VROverlay()->PollNextOverlayEvent(main_, &ev, sizeof(ev))) {
@@ -294,16 +364,22 @@ void Dashboard::run() {
                     if (ev.data.mouse.button == vr::VRMouseButton_Left)
                         releases.push_back({ev.data.mouse.x, DashboardView::kHeight - ev.data.mouse.y});
                     break;
-                case vr::VREvent_KeyboardDone: {
-                    char text[512] = {};
-                    vr::VROverlay()->GetKeyboardText(text, sizeof(text));
-                    typed = text;
-                    break;
-                }
                 case vr::VREvent_FocusLeave:
                     if (pointer_ && view_.dragging())
                         releases.push_back(*pointer_);   // End a drag where the laser left the tab.
                     pointer_.reset();
+                    break;
+                case vr::VREvent_KeyboardDone: {
+                    if (editing_id_.empty())
+                        break;
+                    char buf[512] = {};
+                    vr::VROverlay()->GetKeyboardText(buf, sizeof(buf));
+                    typed = std::make_pair(std::exchange(editing_id_, {}), std::string(buf));
+                    break;
+                }
+                case vr::VREvent_KeyboardClosed:
+                case vr::VREvent_KeyboardClosed_Global:
+                    editing_id_.clear();
                     break;
                 case vr::VREvent_OverlayShown:
                     visible_ = true;
@@ -319,6 +395,24 @@ void Dashboard::run() {
             }
         });
 
+        if (typed) {
+            std::string text = typed->second;
+            text.erase(0, text.find_first_not_of(" \t"));
+            text.erase(text.find_last_not_of(" \t") + 1);
+            // A number that does not parse goes as text, so that the main thread rejects it with a message.
+            nlohmann::json value = text;
+            if (editing_numeric_) {
+                char *end = nullptr;
+                errno = 0;
+                const long n = strtol(text.c_str(), &end, 10);
+                if (!text.empty() && end && *end == '\0' && errno == 0)
+                    value = n;
+            }
+            std::lock_guard<std::mutex> lock(mutex_);
+            apply_output_setting(typed->first, value);
+            redraw = true;
+        }
+        std::optional<std::string> keyboard_for;
         for (const Point &p : clicks) {
             auto r = view_.click(p);
             redraw |= r.redraw;
@@ -338,15 +432,23 @@ void Dashboard::run() {
                 capture_request_ = int(r.capture);
             if (r.update)
                 update_request_ = true;
-            if (r.keyboard)
-                show_keyboard(*r.keyboard);
             std::lock_guard<std::mutex> lock(mutex_);
-            changes_.insert(changes_.end(), r.changes.begin(), r.changes.end());
+            for (const auto &[id, value] : r.changes)   // The fork's pages, which can also set a camera's settings.
+                apply_output_setting(id, value);
             // Show string settings immediately, and let the main thread apply them.
             if (r.mouth_source && *r.mouth_source != status_.mouth_source) {
                 status_.mouth_source = *r.mouth_source;
                 changes_.emplace_back("/mouth_source", *r.mouth_source);
             }
+            if (r.output_setting) {
+                try {
+                    apply_output_setting(r.output_setting->first, nlohmann::json::parse(r.output_setting->second));
+                } catch (const nlohmann::json::exception &) {
+                    LOG.warn("dashboard: bad value for %s", r.output_setting->first.c_str());
+                }
+            }
+            if (r.edit_text)
+                keyboard_for = r.edit_text;
             if (r.camera && *r.camera != status_.camera) {
                 status_.camera = *r.camera;
                 changes_.emplace_back("/sources/face/camera", *r.camera);
@@ -355,7 +457,10 @@ void Dashboard::run() {
                 Choice &c = choices_[r.setting->first];
                 if (c.value != r.setting->second) {
                     c.value = r.setting->second;
-                    changes_.emplace_back(c.id, c.boolean ? nlohmann::json(c.value != 0) : nlohmann::json(c.value));
+                    const size_t k = size_t(c.value);
+                    changes_.emplace_back(c.id, c.boolean                ? nlohmann::json(c.value != 0)
+                                                : !c.text_values.empty() ? nlohmann::json(c.text_values.at(k))
+                                                                         : nlohmann::json(c.value));
                 }
             }
             if (r.toggle) {
@@ -376,15 +481,13 @@ void Dashboard::run() {
             auto r = view_.release(p);
             redraw |= r.redraw;
             std::lock_guard<std::mutex> lock(mutex_);
-            changes_.insert(changes_.end(), r.changes.begin(), r.changes.end());
+            for (const auto &[id, value] : r.changes)
+                apply_output_setting(id, value);
         }
-        if (typed) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            changes_.emplace_back("/sources/face/url", *typed);
-            redraw = true;
-        }
-        if (options_.preview)
-            options_.preview->set_open(visible_ && view_.page() == DashboardView::Page::Mouth);
+        if (options_.frame_preview)
+            options_.frame_preview->set_open(visible_ && view_.page() == DashboardView::Page::Mouth);
+        if (keyboard_for)
+            open_keyboard(*keyboard_for);
 
         // Draw again only when something visible changed.
         if (visible_) {
@@ -409,6 +512,12 @@ void Dashboard::run() {
             }
             // The Eyes, Squint and Mouth pages show live values and the preview at about 15 frames a second.
             redraw |= view_.live_page() && mono_ns() - last_present_ns_ >= 66000000ull;
+            // Show a new camera preview, at most about 15 times a second.
+            if (view_.page() == DashboardView::Page::CameraOptions && options_.preview &&
+                mono_ns() - last_preview_ns_ >= 66000000ull) {
+                last_preview_ns_ = mono_ns();
+                redraw |= options_.preview(preview_);
+            }
             {
                 std::lock_guard<std::mutex> lock(mutex_);
                 redraw |= dirty_;

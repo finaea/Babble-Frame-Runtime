@@ -50,44 +50,97 @@ struct EyeReading {
     double dilation = 0;                 // The Dilation output, from 0 to 1, where 0.5 is the baseline.
 };
 
-// The status of the output for the front page, which is the PC link or VRChat native face tracking.
+// The status of the output for the front page: the PC link, VRChat native face tracking or Babble OSC.
 struct LinkReading {
     bool available = false;   // False hides the line because no output runs.
     bool linked = false;
     std::string path, pc, address;
     double rtt_ms = -1;       // The value is -1 until the first measurement.
     bool native = false;
+    bool osc = false;         // True for Babble OSC, where address has the port.
     bool no_data = false;     // True if the PC is linked but gets none of our data.
     bool restart = false;     // True if VRCFaceTracking must restart to claim the tracking that is on.
+    int more = 0;             // The number of other outputs that are on.
+    bool operator==(const LinkReading &) const = default;
 };
 
-// A streaming mode of a USB camera, from its descriptors.
-struct UsbMode {
-    std::string format;            // "mjpeg" or "yuyv".
-    uint16_t width = 0, height = 0;
-    std::vector<double> fps;       // The advertised rates, highest first.
-    bool too_large = false;        // True if the frame is larger than the 640x480 frame buffers.
+// One setting of an output module, which shows in the row of the module on the Outputs page.
+struct ModuleOption {
+    std::string id, label;    // The id is the JSON pointer of the setting.
+    bool text = false;        // A text setting opens the keyboard, and the other settings are a row of choices.
+    bool numeric = false;     // The keyboard text of a numeric setting is sent as a number.
+    std::vector<std::string> values, labels;   // The choices as JSON text, with one label for each.
+    std::string value;        // The current value: JSON text for a choice, or the text that the setting shows.
+    bool operator==(const ModuleOption &) const = default;
+};
+
+// One output module on the Outputs page.
+struct OutputModule {
+    std::string id, label, hint;   // The id is the key under "outputs".
+    bool on = false;
+    bool ok = false;               // True if the output works, which shows as a green dot.
+    std::string status;            // What the output does now, which replaces the hint while it is on.
+    std::vector<ModuleOption> options;
+    bool operator==(const OutputModule &) const = default;
 };
 
 // A USB camera that the mouth can use.
 struct UsbCamera {
+    UsbCamera() = default;
+    UsbCamera(std::string id_, std::string label_, std::string detail_, bool iso_ = false)
+        : id(std::move(id_)), label(std::move(label_)), detail(std::move(detail_)), iso(iso_) {}
+
     std::string id;       // The value of usb::device_id(), which is also the setting value.
     std::string label;
     std::string detail;   // The USB ID and serial number.
-    std::vector<UsbMode> modes{};   // MJPEG modes first, then YUYV, each group largest first.
+    bool iso = false;     // True if the camera streams over isochronous transfers.
+
+    struct Size {
+        int width = 0, height = 0;
+        std::vector<int> fps;   // The frame rates, highest first.
+        bool operator==(const Size &) const = default;
+    };
+    struct Format {
+        std::string key, label;   // For example "mjpeg" and "MJPEG".
+        std::vector<Size> sizes;
+        bool operator==(const Format &) const = default;
+    };
+    std::vector<Format> formats;   // The formats that the runtime can decode, which can be empty.
+
+    // The settings of the camera, with the mode that the camera streams for them.
+    struct Settings {
+        std::string format;
+        int width = 0, height = 0, fps = 0;
+        int rotate = 0;   // Clockwise, in degrees.
+        bool flip_h = false, flip_v = false;
+        bool operator==(const Settings &) const = default;
+    };
+    Settings settings;
+    bool operator==(const UsbCamera &) const = default;
 };
 
-// The USB mouth camera as it runs now.
+// The USB mouth camera as it runs now, for the fork's Mouth page.
 struct UsbStream {
     enum class State { None, Waiting, Opening, Streaming, Busy, Error };
     State state = State::None;     // None if the face source is not in USB mode.
     std::string camera{};          // The usb::device_id() of the open camera.
-    std::string format{};          // "mjpeg" or "yuyv" while streaming.
-    uint16_t width = 0, height = 0;
+    std::string format{};          // The format key, such as "mjpeg" or "yuy2", while streaming.
+    uint16_t width = 0, height = 0;   // The frame size from the camera, before its rotation.
     double fps_asked = 0;          // The negotiated rate.
     double fps_real = 0;           // The measured rate of frames from the camera.
     std::string error{};           // The reason for Busy or Error.
 };
+
+// A small grayscale image of the latest frame of the camera that streams, for the camera options page.
+struct CameraPreview {
+    std::string camera;   // The UsbCamera id, or empty when no camera streams.
+    int width = 0, height = 0;
+    std::vector<uint8_t> gray;
+    uint64_t seq = 0;
+};
+
+// Returns the setting id of the settings of a USB camera, with the id escaped as a JSON pointer token.
+std::string camera_setting_id(const std::string &camera_id);
 
 // The row on the Diagnostics page for the optional dataset capture app.
 struct CaptureRow {
@@ -131,17 +184,26 @@ struct Status {
     std::map<std::string, std::string> choice_hints{};
     CaptureRow capture{};
     UpdateNotice update{};
+    const CameraPreview *preview = nullptr;   // The camera preview while the camera options page shows.
+    // The data for the Outputs page, where pc_address "" means automatic.
+    std::vector<OutputModule> outputs{};
+    std::string pc_address{}, output_error{};
 };
 
 // A user setting that shows as a row of choices or as a switch, where id is its JSON pointer in the config.
+// The page that a setting shows on.
+// Eyelids, Gaze and Squint are the fork's Eyes and Squint pages.
+enum class ChoicePage { Settings, Eye, EyeSources, EyeModifiers, Mouth, Cameras, Diagnostics, Eyelids, Gaze, Squint };
+
 struct Choice {
     std::string id, label, hint, unit;
     std::vector<double> options;
     double value = 0;
     bool boolean = false;
-    bool diagnostics = false;
+    ChoicePage page = ChoicePage::Settings;
     std::vector<std::string> option_labels{};   // If set, one label for each option replaces the value and unit.
-    std::string page{};   // The page of the row: "" or "settings", "diagnostics", "eyelids", "gaze" or "squint".
+    // For a text setting, the setting value of each option. The options are then their indexes.
+    std::vector<std::string> text_values{};
 };
 
 struct Point {
@@ -152,7 +214,11 @@ struct Point {
 class DashboardView {
 public:
     static constexpr int kWidth = 1200, kHeight = 750, kThumb = 128;
-    enum class Page { Home, Settings, Cameras, Diagnostics, Eyes, Squint, Mouth, Resolution };
+    // Mouth draws the fork's Mouth page, and Eyes, Squint and Resolution are the fork's pages.
+    enum class Page {
+        Home, Settings, Cameras, Diagnostics, Outputs, Eye, EyeSources, EyeModifiers, Mouth, CameraOptions,
+        CameraResolution, Eyes, Squint, Resolution
+    };
 
     bool load_fonts(const std::filesystem::path &dir);   // Loads NotoSans-Regular.ttf and NotoSans-Medium.ttf.
     bool load_icons(const std::filesystem::path &dir);   // Loads the optional logo PNG files.
@@ -177,9 +243,11 @@ public:
         enum class CaptureAction { None, Primary, Remove } capture = CaptureAction::None;
         // True if the user clicked the update pill, and the update state sets what the click does.
         bool update = false;
-        // Settings from the Eyes, Squint and Mouth pages, as pairs of JSON pointer and new value.
+        // Settings from the Eyes, Squint, Mouth and Resolution pages, as pairs of JSON pointer and new value.
         std::vector<std::pair<std::string, nlohmann::json>> changes;
-        std::optional<std::string> keyboard;   // Open the SteamVR keyboard for the stream URL with this text.
+        // A choice on the Outputs page as a setting id and the new value as JSON text.
+        std::optional<std::pair<std::string, std::string>> output_setting;
+        std::optional<std::string> edit_text;   // The id of the text setting to type in with the keyboard.
     };
     // Finds the element at p in the last render.
     ClickResult click(Point p);
@@ -193,9 +261,14 @@ public:
 
     Page page() const { return page_; }
     void set_page(Page p) { page_ = p; }
+    // The camera that the camera options pages show.
+    const std::string &options_camera() const { return options_camera_; }
+    void set_options_camera(const std::string &id) { options_camera_ = id; }
 
     // The Eyes, Squint, Mouth and Resolution pages draw live data, which the caller sets before each render.
-    bool live_page() const { return page_ >= Page::Eyes; }
+    bool live_page() const {
+        return page_ == Page::Eyes || page_ == Page::Squint || page_ == Page::Mouth || page_ == Page::Resolution;
+    }
     void set_page_data(PageData d) { fork_.data = std::move(d); }
     // A drag that started with a click on a range handle or the crop box follows the pointer until release.
     bool dragging() const { return fork_.drag.kind != DragState::Kind::None; }
@@ -206,19 +279,32 @@ private:
     struct Hit {
         enum Kind {
             Cog, Back, Option, Toggle, Visualizer, Restart, MouthSource, OpenCameras, Camera, Refresh,
-            OpenDiagnostics, Verbose, WriteDiagnostics, CapturePrimary, CaptureRemove, Update,
-            Fork   // An element of the Eyes, Squint or Mouth page, which text names.
+            OpenDiagnostics, Verbose, WriteDiagnostics, CapturePrimary, CaptureRemove, Update, OpenOutputs,
+            OutputSetting, EditText, OpenEye, OpenMouth, OpenCameraOptions, OpenResolution, OpenEyeSources,
+            OpenEyeModifiers,
+            Fork   // An element of the fork's pages, which text names.
         } kind;
         Rect rect;
         size_t choice = 0;   // The choice index for Option, or the feed index for Toggle.
         double value = 0;    // The value for Option, or 1 to turn on for Toggle.
-        std::string text{};  // The value for MouthSource, or the camera id for Camera.
-        nlohmann::json json{};   // The setting value for a Fork element.
+        std::string text{};  // The value for MouthSource, the camera id for Camera, or the setting id.
+        std::string json{};  // The new value as JSON text for OutputSetting.
+        nlohmann::json data{};   // The setting value or the geometry for a Fork element.
     };
     void render_home(Canvas &c, const Status &s);
     void render_settings(Canvas &c, const std::vector<Choice> &choices, const Status &s);
-    void render_cameras(Canvas &c, const Status &s);
+    void render_eye_page(Canvas &c, const std::vector<Choice> &choices, const Status &s);
+    // Draws a page that has only the choices of one ChoicePage.
+    void render_choice_page(Canvas &c, const char *title, const std::vector<Choice> &choices, ChoicePage page,
+                            const Status &s);
+    void render_mouth_page(Canvas &c, const std::vector<Choice> &choices, const Status &s);
+    void render_cameras(Canvas &c, const std::vector<Choice> &choices, const Status &s);
+    void render_camera_options(Canvas &c, const Status &s);
+    void render_camera_resolution(Canvas &c, const Status &s);
     void render_diagnostics(Canvas &c, const std::vector<Choice> &choices, const Status &s);
+    void render_outputs(Canvas &c, const Status &s);
+    // Draws a text setting as a button with its value, and returns its left edge.
+    float render_text_field(Canvas &c, float right, float y, const std::string &id, const std::string &shown);
     void render_switch_row(Canvas &c, float y, size_t index, const Choice &ch, float row_h = 124);
     void render_capture_row(Canvas &c, float y, float row_h, const CaptureRow &row);
     void render_update_pill(Canvas &c, float x, float baseline, const UpdateNotice &u);
@@ -226,7 +312,8 @@ private:
                        bool on_card = false);   // Returns the rect of the button.
     void render_back(Canvas &c, const char *title);
     float render_segments(Canvas &c, float right, float y, const std::vector<std::string> &labels, int selected,
-                          const std::function<void(size_t, const Rect &)> &hit);   // Returns the left edge.
+                          const std::function<void(size_t, const Rect &)> &hit, float seg_h = 64,
+                          float seg_w = 160);   // Returns the left edge.
     void render_cog(Canvas &c);
     void render_switch(Canvas &c, Rect r, bool on, bool hover,
                        std::optional<Color> on_color = std::nullopt);   // on_color replaces the accent colour.
@@ -235,6 +322,14 @@ private:
     void render_link(Canvas &c, const LinkReading &link, float right);
     void render_eye(Canvas &c, float x, float y, const char *name, const EyeReading &e);
     enum class Icon { Mouth, Eye, Rate, Camera, Logs, Document, Settings, Home, Capture, Count };
+    struct RowLayout {
+        float top, row_h;
+    };
+    RowLayout row_layout(const Canvas &c, size_t rows, float below) const;
+    void render_link_row(Canvas &c, float y, float row_h, Icon icon, const std::string &label, const std::string &hint,
+                         Hit::Kind kind);
+    float render_choice_rows(Canvas &c, float y, float row_h, const std::vector<Choice> &choices, ChoicePage page,
+                             const Status &s);
     void render_icon(Canvas &c, Icon icon, float x, float y, Color color);
     float render_block(Canvas &c, float y, Icon icon, float row_h = 124);   // Returns the left edge of the text.
     bool hovered(const Rect &r) const;
@@ -244,10 +339,12 @@ private:
     void render_squint(Canvas &c, const std::vector<Choice> &choices);
     void render_mouth(Canvas &c, const Status &s);
     void render_resolution(Canvas &c, const Status &s);   // The modes of the USB mouth camera.
-    void render_page_buttons(Canvas &c, float right);   // The Eyes, Squint and Mouth buttons on Settings.
+    // Returns true if the camera has no saved mode, or the source defaults that the Auto row saves.
+    bool automatic_mode(const UsbCamera &cam) const;
     void render_range(Canvas &c, Rect r, const std::string &pointer, const std::string &signal, bool signed_axis,
                       bool dim = false);
-    void render_text_field(Canvas &c, Rect r, const std::string &action, const std::string &text,
+    // Draws a wide text field that opens the keyboard for the text setting id.
+    void render_text_field(Canvas &c, Rect r, const std::string &id, const std::string &text,
                            const std::string &placeholder);
     void render_choice_row(Canvas &c, float y, float row_h, size_t index, const Choice &ch);
     // Draws segments that set the string or number at pointer to one of the values.
@@ -269,6 +366,7 @@ private:
     std::string fit(const Font &f, const std::string &text, float px, float max_w) const;
 
     Page page_ = Page::Home;
+    std::string options_camera_;   // The id of the camera on the camera options pages.
     uint64_t restart_armed_until_ns_ = 0;   // The end of the confirmation time for the restart button.
     uint64_t update_armed_until_ns_ = 0;    // The end of the confirmation time for the update pill.
     Font regular_, medium_;

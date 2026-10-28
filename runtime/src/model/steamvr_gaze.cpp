@@ -104,6 +104,22 @@ std::optional<bool> parse_gaze_source(const nlohmann::json &v) {
 
 }
 
+void gaze::Smoother::apply(const float raw[4], float out[4], int level, uint64_t now_ns) {
+    std::copy(raw, raw + 4, out);
+    if (level <= 0 || level > levels()) {
+        level_ = 0;
+        return;
+    }
+    if (level_ != level) {   // The first sample of a new filter does not change.
+        filter_ = OneEuro(4, presets_[size_t(level - 1)]);
+        level_ = level;
+        filter_.apply(out, 4, 0);
+    } else {
+        filter_.apply(out, 4, double(now_ns - last_ns_) * 1e-9);
+    }
+    last_ns_ = now_ns;
+}
+
 bool SteamVrGaze::init() {
     if (!deps_.steamvr) {
         LOG.error("pipeline %s: needs the SteamVR client", name_.c_str());
@@ -135,7 +151,7 @@ bool SteamVrGaze::init() {
     }
     lid_ids_ = {deps_.state.add_signal("_LeftEyeLidPre"), deps_.state.add_signal("_RightEyeLidPre")};
     // The strength sets the filter first, so one_euro or deadzone in a user config can still fine-tune it.
-    for (const char *key : {"smoothing", "smoothing_strength", "one_euro", "deadzone", "hold_closed_below", "ranges"})
+    for (const char *key : {"smoothing", "one_euro", "deadzone", "hold_closed_below", "ranges"})
         if (cfg_.contains(key) && !set_filter_option(key, cfg_[key]))
             LOG.warn("pipeline %s: ignoring %s = %s", name_.c_str(), key, cfg_[key].dump().c_str());
     const std::string p = "pipe." + name_ + ".";
@@ -144,18 +160,14 @@ bool SteamVrGaze::init() {
     deps_.stats.add(p + "reconnects", &reconnects_);
     deps_.stats.add(p + "fallback", &fallback_);
     stats_registered_ = true;
-    LOG.info("pipeline %s: SteamVR eye gaze at %.0f Hz, %s, %s scaling", name_.c_str(), cfg_.value("rate_hz", 90.0),
-             independent_ ? "independent per-eye" : "combined", scaling.c_str());
+    LOG.info("pipeline %s: SteamVR eye gaze at %.0f Hz, %s, %s scaling, smoothing %d", name_.c_str(),
+             cfg_.value("rate_hz", 90.0), independent_ ? "independent per-eye" : "combined", scaling.c_str(), smoothing_);
     return true;
 }
 
 bool SteamVrGaze::set_filter_option(const std::string &key, const nlohmann::json &value) {
     std::lock_guard<std::mutex> lock(opt_mutex_);
-    if (key == "smoothing" && value.is_boolean()) {
-        smoothing_ = value.get<bool>();
-        return true;
-    }
-    if (key == "smoothing_strength" && value.is_number()) {
+    if (key == "smoothing" && value.is_number()) {
         // 0 is Valve's raw gaze. 1-3 set the One Euro filter and the deadzone together, and Medium is frameeyeosc's
         // defaults (config.rs): a lower min_cutoff and beta are steadier but follow the eyes later.
         static constexpr struct {
@@ -165,7 +177,9 @@ bool SteamVrGaze::set_filter_option(const std::string &key, const nlohmann::json
         const int level = int(v);
         if (v != level || level < 0 || level > 3)
             return false;
-        smoothing_ = level > 0;
+        if (level != smoothing_)
+            LOG.info("pipeline %s: gaze smoothing %d", name_.c_str(), level);
+        smoothing_ = level;
         if (level > 0) {
             const auto &l = kLevels[level - 1];
             filter_params_.euro = *one_euro_params(nlohmann::json{{"min_cutoff", l.min_cutoff}, {"beta", l.beta}},
@@ -214,8 +228,10 @@ bool SteamVrGaze::set_option(const std::string &key, const nlohmann::json &value
     auto source = parse_gaze_source(value);
     if (!source)
         return false;
-    if (*source != independent_.exchange(*source))
+    if (*source != independent_.exchange(*source)) {
+        smoothing_reset_ = true;   // The two sources do not line up, so the filter starts again.
         LOG.info("pipeline %s: gaze source %s", name_.c_str(), *source ? "independent per-eye" : "combined");
+    }
     return true;
 }
 
@@ -232,7 +248,9 @@ void SteamVrGaze::stop() {
         deps_.eye_server->want(EyeServerClient::Gaze, false);
 }
 
-void SteamVrGaze::publish(double lx, double ly, double rx, double ry, uint64_t now) {
+void SteamVrGaze::publish(double lx, double ly, double rx, double ry, uint64_t now, bool centre) {
+    if (centre)
+        smoothing_reset_ = true;   // The gaze comes back from the centre without a slow glide.
     std::pair<SignalId, Signal> u[4] = {{ids_[0], {float(lx), 1.0f, now}},
                                         {ids_[1], {float(ly), 1.0f, now}},
                                         {ids_[2], {float(rx), 1.0f, now}},
@@ -241,7 +259,7 @@ void SteamVrGaze::publish(double lx, double ly, double rx, double ry, uint64_t n
 }
 
 void SteamVrGaze::send(double lx, double ly, double rx, double ry, uint64_t now) {
-    bool smoothing;
+    int smoothing;
     gaze::FilterParams fp;
     std::array<ManualRange, 4> ranges;
     {
@@ -251,6 +269,8 @@ void SteamVrGaze::send(double lx, double ly, double rx, double ry, uint64_t now)
         ranges = ranges_;
     }
     std::array<double, 4> v = {lx, ly, rx, ry};
+    if (smoothing_reset_.exchange(false))
+        filter_.reset();
     if (smoothing) {
         fp.deadzone = gaze::width_for(fp.deadzone, max_deg_, scaling_);
         filter_.set_params(fp);
@@ -273,12 +293,23 @@ void SteamVrGaze::send(double lx, double ly, double rx, double ry, uint64_t now)
     deps_.state.update(u);
 }
 
-// Get the direction of each eye from the eye-service shared memory.
+// Get the direction of each eye from the eye-service shared memory. While "Track Dominant Eye Only" is on, the gaze
+// before fusion still has both eyes, so both eyes get the fused gaze of the tracked eye, as SteamVR apps do.
 bool SteamVrGaze::tick_independent(uint64_t now) {
     auto s = deps_.eye_server->latest(uint64_t(stale_ns_));
     if (!s)
         return false;
-    const auto &l = s->pre_fusion_gaze[eye_server::kLeftEye], &r = s->pre_fusion_gaze[eye_server::kRightEye];
+    if (s->dominant_eye != dominant_eye_) {
+        dominant_eye_ = s->dominant_eye;
+        if (dominant_eye_ < 0)
+            LOG.info("pipeline %s: Track Dominant Eye Only is off; gaze for each eye", name_.c_str());
+        else
+            LOG.info("pipeline %s: Track Dominant Eye Only is on; both eyes follow the %s eye", name_.c_str(),
+                     dominant_eye_ == eye_server::kLeftEye ? "left" : "right");
+    }
+    const bool one_eye = dominant_eye_ >= 0;
+    const auto &l = one_eye ? s->gaze[dominant_eye_] : s->pre_fusion_gaze[eye_server::kLeftEye];
+    const auto &r = one_eye ? s->gaze[dominant_eye_] : s->pre_fusion_gaze[eye_server::kRightEye];
     auto gl = gaze::from_direction(l[0], l[1], l[2], max_deg_, flip_y_, off_, scaling_);
     auto gr = gaze::from_direction(r[0], r[1], r[2], max_deg_, flip_y_, off_, scaling_);
     if (!gl || !gr)
@@ -351,7 +382,7 @@ void SteamVrGaze::run() {
             deps_.eye_server->want(EyeServerClient::Gaze, want_independent);
         if (!tracking_) {   // The user turned the eye feed off.
             if (!centred) {
-                publish(0, 0, 0, 0, now);
+                centre(now);
                 centred = true;
             }
             sleep_ns(100000000);
@@ -375,7 +406,7 @@ void SteamVrGaze::run() {
             last_valid = now;
             centred = false;
         } else if (!centred && now - last_valid > uint64_t(stale_ns_)) {   // Go back to centre one time, as the reference does.
-            publish(0, 0, 0, 0, now);
+            centre(now);
             centred = true;
         }
         sleep_ns(period);

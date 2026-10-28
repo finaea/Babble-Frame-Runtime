@@ -6,7 +6,8 @@
   "stats_interval_s": 5,
   "stats_summary_s": 60,
   "mouth_source": "frunk",
-  "output": "vrcft",
+  "outputs": { "vrcft": true, "vrc_native": false, "babble_osc": false },
+  "pc_address": "",
   "threads": {
     "main": {
       "name": "babble-runtime",
@@ -124,6 +125,8 @@
       "width": 240,
       "height": 240,
       "fps": 30,
+      "tracker_flip_h": true,
+      "cameras": {},
       "process_fps": 30,
       "tracking": true,
       "pause_when_absent": true,
@@ -149,14 +152,18 @@
       "enabled": true,
       "from": "eye",
       "thread": "infE",
-      "model": "eye_split96_uncapped_fp16.pte",
+      "model": "eye_kit_stage1_fp16.pte",
+      "pupil_model": "eye_kit_stage2_fp16.pte",
+      "pupil_crop_px": 128,
+      "kit_widen_gain": 0.8,
       "openness_source": "model",
       "update_hz": 90,
       "pupil_gain": 2.0,
       "lid_calibration": "baseline",
       "widen_seed": 0.15,
       "widen_ceiling_max": 1.6,
-      "lid_saturation": 1.0,
+      "lid_saturation": 1.6,
+      "closed_seed": 0.3,
       "calib_tol": 0.15,
       "calib": true,
       "calib_window_s": 20,
@@ -164,11 +171,13 @@
       "pupil_gate": 0.4,
       "pupil_gate_hys": 0.1,
       "pupil_hold_s": 0.1,
-      "pupil_rate": 0.6,
+      "pupil_rate_mm": 0.06,
       "pupil_base_s": 60,
       "one_euro": { "min_cutoff": 1.0, "beta": 5.0, "d_cutoff": 3.0 },
-      "pupil_one_euro": { "min_cutoff": 0.5, "beta": 0.01, "d_cutoff": 1.0 },
+      "pupil_one_euro_mm": { "min_cutoff": 0.5, "beta": 0.1, "d_cutoff": 1.0 },
       "babble_swap": false,
+      "combine_widen": true,
+      "combine_dilation": true,
       "blink_hold_ms": 0,
       "ranges": {
         "LeftEyeLid": [0, 1], "RightEyeLid": [0, 1],
@@ -191,7 +200,7 @@
       "pitch_offset": 0,
       "roll_offset": 0,
       "stale_s": 0.5,
-      "smoothing_strength": 1,
+      "smoothing": 1,
       "hold_closed_below": 0.5,
       "ranges": {
         "LeftEyeX": [-1, 1], "LeftEyeY": [-1, 1],
@@ -242,6 +251,12 @@
       "type": "vrcft_link",
       "enabled": true,
       "output": "vrcft",
+      "module": {
+        "label": "VRCFaceTracking",
+        "hint": "The Babble module in VRCFaceTracking on your PC, found on the network by itself.",
+        "order": 0,
+        "uses_pc_address": true
+      },
       "thread": "osc",
       "control_port": 6767,
       "path_order": ["dongle", "usb", "lan"],
@@ -271,6 +286,16 @@
       "type": "vrc_native",
       "enabled": true,
       "output": "vrc_native",
+      "module": {
+        "label": "VRChat Native",
+        "hint": "Straight into VRChat's own face tracking, without VRCFaceTracking.",
+        "order": 1,
+        "uses_pc_address": true,
+        "options": [
+          { "key": "target", "label": "VRChat On", "kind": "choice", "values": ["auto", "pc", "frame"],
+            "labels": ["Auto", "PC", "Frame"] }
+        ]
+      },
       "thread": "osc",
       "target": "auto",
       "host": "",
@@ -292,6 +317,31 @@
       "type": "frame_preview",
       "enabled": true,
       "max_hz": 15
+    },
+    "babble_osc": {
+      "type": "babble_osc",
+      "enabled": true,
+      "output": "babble_osc",
+      "module": {
+        "label": "Babble OSC",
+        "hint": "Baballonia-format OSC to the PC address, the PC you stream from, or this headset. Allow its UDP port in Windows Firewall.",
+        "order": 2,
+        "uses_pc_address": true,
+        "options": [
+          { "key": "target", "label": "Send To", "kind": "choice", "values": ["auto", "pc", "frame"],
+            "labels": ["Auto", "PC", "Frame"] },
+          { "key": "port", "label": "Port", "kind": "text", "numeric": true, "validate": "port" }
+        ]
+      },
+      "thread": "osc",
+      "target": "auto",
+      "host": "",
+      "port": 8888,
+      "prefix": "",
+      "bundle": false,
+      "steam_link_log": "",
+      "max_rate_hz": 0,
+      "exclude": []
     }
   },
   "arbiter": {
@@ -348,21 +398,19 @@
     "values": [
       { "key": "mouthTracking", "id": "/sources/mouth/tracking" },
       { "key": "mouthSource", "id": "/mouth_source" },
-      { "key": "output", "id": "/output" },
       { "key": "mouthRate", "id": "/sources/mouth/process_fps" },
       { "key": "eyeTracking", "id": "/sources/eye/tracking" },
       { "key": "eyeRateDivisor", "id": "/sources/eye/rate_divisor" },
-      { "key": "opennessSource", "id": "/pipelines/eye/openness_source" },
-      { "key": "gazeSource", "id": "/pipelines/gaze/gaze_source" },
       { "key": "debugOverlay", "id": "/dashboard/enabled" }
     ]
   },
   "dashboard": {
-    "enabled": false,
+    "enabled": true,
     "width_m": 1.6,
     "settings": [
       {
         "id": "/sources/mouth/process_fps",
+        "page": "settings",
         "label": "Mouth Tracking Rate",
         "hint": "Lower rates save battery.",
         "unit": "Hz",
@@ -370,16 +418,17 @@
       },
       {
         "id": "/sources/eye/rate_divisor",
+        "page": "eye",
         "label": "Eye Tracking Rate",
         "hint": "A share of the eye camera rate. Lower rates save battery.",
         "options": [1, 2, 3],
         "labels": ["1:1", "1:2", "1:3"]
       },
       {
-        "id": "/pipelines/gaze/smoothing_strength",
-        "page": "gaze",
+        "id": "/pipelines/gaze/smoothing",
+        "page": "eye",
         "label": "Gaze Smoothing",
-        "hint": "Higher is steadier but follows later. Off is Valve's raw gaze.",
+        "hint": "Steadies the gaze. Stronger smoothing adds a little lag to fast eye movements.",
         "options": [0, 1, 2, 3],
         "labels": ["Off", "Low", "Medium", "High"]
       },
@@ -397,6 +446,34 @@
         "page": "squint",
         "label": "Squint",
         "hint": "Squint from eyecam's engine on the eye cameras. Needs the squint calibration once."
+      },
+      {
+        "id": "/pipelines/eye/openness_source",
+        "page": "eye_sources",
+        "label": "Openness Source",
+        "hint": "Babble uses the runtime's eye model. Native uses the headset's own eye openness.",
+        "options": ["model", "native"],
+        "labels": ["Babble", "Native"]
+      },
+      {
+        "id": "/pipelines/gaze/gaze_source",
+        "page": "eye_sources",
+        "label": "Gaze Source",
+        "hint": "Independent lets each eye move on its own. Combined uses the single gaze of SteamVR.",
+        "options": ["independent", "combined"],
+        "labels": ["Independent", "Combined"]
+      },
+      {
+        "id": "/pipelines/eye/combine_widen",
+        "page": "eye_modifiers",
+        "label": "Combine Eye Widen",
+        "hint": "Both eyes get the average Widen of the two eyes."
+      },
+      {
+        "id": "/pipelines/eye/combine_dilation",
+        "page": "eye_modifiers",
+        "label": "Combine Pupil Dilation",
+        "hint": "Both eyes get the average pupil dilation of the two eyes."
       },
       {
         "id": "/sinks/camera_stream/active",

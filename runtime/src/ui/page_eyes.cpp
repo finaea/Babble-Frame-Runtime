@@ -61,23 +61,15 @@ void DashboardView::render_eyes(Canvas &c, const std::vector<Choice> &choices) {
     }
     // The dashboard rows of this tab, such as Blink Hold or Gaze Smoothing.
     for (size_t i = 0; i < choices.size(); i++)
-        if (choices[i].page == (gaze ? "gaze" : "eyelids")) {
+        if (choices[i].page == (gaze ? ChoicePage::Gaze : ChoicePage::Eyelids)) {
             render_choice_row(c, y, 96, i, choices[i]);
             y += 96;
         }
-    if (gaze) {
-        // Valve's own gaze for each eye, or SteamVR's combined gaze for both.
-        c.fill_rect({kMargin, y + 4, W - 2 * kMargin, 80}, kCard, 6);
-        medium_.draw(c, kMargin + 20, y + 44 + medium_.cap_height(26) / 2, "Gaze Source", 26, kText);
-        render_value_segments(c, W - kMargin - 12, y + 8, "/pipelines/gaze/gaze_source", {"Per Eye", "Combined"},
-                              {"independent", "combined"}, 150);
-        y += 88;
-    }
 
     const Rect max_btn = render_small_button(c, W - kMargin, kBottomY, "Reset Maximums", "reset:max");
     const Rect min_btn = render_small_button(c, max_btn.x - 16, kBottomY, "Reset Minimums", "reset:min");
-    hits_[hits_.size() - 1].json = reset;
-    hits_[hits_.size() - 2].json = reset;
+    hits_[hits_.size() - 1].data = reset;
+    hits_[hits_.size() - 2].data = reset;
     regular_.draw(c, 150, kBottomY + 39, fit(regular_, "Resets the ranges on this tab.", 20, min_btn.x - 32 - 150), 20,
                   kMuted);
 }
