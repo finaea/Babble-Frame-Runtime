@@ -40,15 +40,15 @@ constexpr size_t kMaxFrame = 1 << 20;
 std::string basic_auth(const std::string &user, const std::string &password);
 
 // Extracts JPEG images from an HTTP response body by their FF D8 (start) and FF D9 (end) markers. The Content-Type
-// and any multipart boundaries are ignored, so both multipart/x-mixed-replace and raw concatenated JPEGs work.
-// Feed it the bytes in any chunks.
+// and any multipart boundaries are ignored, so both multipart/x-mixed-replace and raw concatenated JPEGs work, but a
+// text/html answer (a web page instead of the stream) is refused. Feed it the bytes in any chunks.
 class StreamParser {
 public:
     using OnPart = std::function<void(const uint8_t *data, size_t size)>;
     explicit StreamParser(OnPart on_part, size_t max_frame = kMaxFrame)
         : on_part_(std::move(on_part)), max_frame_(max_frame) {}
 
-    // Returns false on a response that is not a 200 or is malformed, and error() tells why.
+    // Returns false on a response that is not a 200, is a web page or is malformed, and error() tells why.
     bool feed(const uint8_t *data, size_t size);
     const std::string &error() const { return error_; }
     bool connected() const { return stage_ != Stage::Response; }   // True after a 200 response header.

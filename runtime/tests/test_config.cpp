@@ -371,3 +371,21 @@ TEST_CASE("the session log shows config changes but never upload credentials") {
     CHECK(all.find("config: /capture/upload/secret_key set (not logged)") != std::string::npos);
     CHECK(all.find("http://example/releases.json") != std::string::npos);
 }
+
+TEST_CASE("diag::redacted hides secret values at any depth and leaves the config alone") {
+    nlohmann::json cfg = {{"sources", {{"face", {{"username", "alice"}, {"password", "hunter2-pw"}}}}},
+                          {"capture", {{"upload", {{"secret_key", "secret-value"}}}, {"fps", 30}}}};
+    const nlohmann::json before = cfg;
+    const std::string out = diag::redacted(cfg).dump(2);
+    CHECK(out.find("hunter2-pw") == std::string::npos);
+    CHECK(out.find("secret-value") == std::string::npos);
+    CHECK(out.find("(not logged)") != std::string::npos);
+    CHECK(out.find("alice") != std::string::npos);
+    CHECK(out.find("30") != std::string::npos);
+    CHECK(diag::redacted(cfg)["sources"]["face"]["password"] == "(not logged)");
+    CHECK(diag::redacted(cfg)["capture"]["upload"]["secret_key"] == "(not logged)");
+    CHECK(cfg == before);
+
+    CHECK(diag::log_value("/sources/face/password", "hunter2-pw") == "(not logged)");
+    CHECK(diag::log_value("/capture/fps", 30) == "30");
+}

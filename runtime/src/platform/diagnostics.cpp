@@ -50,11 +50,37 @@ bool secret_path(const std::string &path) {
     return false;
 }
 
+// Replaces the value of every secret key under v, whose config path is path, with "(not logged)".
+void redact(nlohmann::json &v, const std::string &path) {
+    if (v.is_object()) {
+        for (auto &el : v.items()) {
+            const std::string child = path + "/" + el.key();
+            if (secret_path(child))
+                el.value() = "(not logged)";
+            else
+                redact(el.value(), child);
+        }
+    } else if (v.is_array()) {
+        for (size_t i = 0; i < v.size(); i++)
+            redact(v[i], path + "/" + std::to_string(i));
+    }
+}
+
 std::string short_value(const nlohmann::json &v) {
     std::string s = v.dump();
     return s.size() > 120 ? s.substr(0, 117) + "..." : s;
 }
 
+}
+
+nlohmann::json redacted(const nlohmann::json &cfg) {
+    nlohmann::json out = cfg;
+    redact(out, "");
+    return out;
+}
+
+std::string log_value(const std::string &path, const nlohmann::json &value) {
+    return secret_path(path) ? "(not logged)" : value.dump();
 }
 
 std::vector<std::string> session_info(const nlohmann::json &cfg, const fs::path &models_dir) {

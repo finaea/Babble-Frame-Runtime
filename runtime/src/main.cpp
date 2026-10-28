@@ -774,8 +774,8 @@ int main(int argc, char **argv) {
         const json::json_pointer ptr(id);
         if (cfg.contains(ptr) && cfg[ptr] == value)
             return;
-        LOG.debug("settings: %s = %s from %s (was %s)", id.c_str(), value.dump().c_str(), origin_name(origin),
-                  cfg.contains(ptr) ? cfg[ptr].dump().c_str() : "unset");
+        LOG.debug("settings: %s = %s from %s (was %s)", id.c_str(), diag::log_value(id, value).c_str(),
+                  origin_name(origin), cfg.contains(ptr) ? diag::log_value(id, cfg[ptr]).c_str() : "unset");
         bool applied = false, mouth_handled = false;
         if (auto r = apply_mouth_setting(id, value)) {
             if (!*r)
@@ -848,7 +848,7 @@ int main(int argc, char **argv) {
             applied = true;
         }
         if (!applied) {
-            LOG.warn("settings: ignoring %s = %s", id.c_str(), value.dump().c_str());
+            LOG.warn("settings: ignoring %s = %s", id.c_str(), diag::log_value(id, value).c_str());
             // Send our value back because SteamVR already shows the rejected value.
             if (origin == Origin::SteamVr && cfg.contains(ptr))
                 steamvr_settings.push(id, cfg[ptr]);
@@ -856,13 +856,14 @@ int main(int argc, char **argv) {
         }
         cfg[ptr] = value;
         if (origin == Origin::Reload)
-            LOG.info("settings: %s = %s (config reload)", id.c_str(), value.dump().c_str());
+            LOG.info("settings: %s = %s (config reload)", id.c_str(), diag::log_value(id, value).c_str());
         if (origin != Origin::Reload && unsaved.count(id)) {
-            LOG.info("settings: %s = %s from %s (this run only)", id.c_str(), value.dump().c_str(), origin_name(origin));
+            LOG.info("settings: %s = %s from %s (this run only)", id.c_str(), diag::log_value(id, value).c_str(),
+                     origin_name(origin));
         } else if (origin != Origin::Reload) {
             std::string err;
             if (save_setting(settings_file, ptr, value, &err))
-                LOG.info("settings: %s = %s from %s (saved to %s)", id.c_str(), value.dump().c_str(),
+                LOG.info("settings: %s = %s from %s (saved to %s)", id.c_str(), diag::log_value(id, value).c_str(),
                          origin == Origin::Dashboard ? "the Babble tab" : "SteamVR Settings", settings_file.c_str());
             else
                 LOG.error("settings: saving %s failed: %s", id.c_str(), err.c_str());
@@ -881,7 +882,7 @@ int main(int argc, char **argv) {
         try {
             apply_setting_unchecked(id, value, origin);
         } catch (const json::exception &e) {
-            LOG.warn("settings: ignoring %s = %s: %s", id.c_str(), value.dump().c_str(), e.what());
+            LOG.warn("settings: ignoring %s = %s: %s", id.c_str(), diag::log_value(id, value).c_str(), e.what());
         }
     };
 
@@ -968,7 +969,7 @@ int main(int argc, char **argv) {
         o << "\n== threads\n";
         for (const auto &line : diag::thread_report())
             o << line << "\n";
-        o << "\n== stats (last interval)\n" << last_stats << "\n\n== effective config\n" << cfg.dump(2)
+        o << "\n== stats (last interval)\n" << last_stats << "\n\n== effective config\n" << diag::redacted(cfg).dump(2)
           << "\n\n== recent log\n";
         for (const auto &line : log::recent(300))
             o << line;

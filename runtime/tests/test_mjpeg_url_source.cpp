@@ -223,7 +223,8 @@ TEST_CASE("mjpeg stream parser rejects a non-200 response") {
 
 TEST_CASE("mjpeg stream parser ignores the Content-Type and reads raw concatenated JPEGs") {
     const std::string jpeg = read_jpeg();
-    const std::string stream = "HTTP/1.0 200 OK\r\nContent-Type: text/html\r\n\r\njunk" + jpeg + jpeg + "x" + jpeg;
+    const std::string stream =
+        "HTTP/1.0 200 OK\r\nContent-Type: application/octet-stream\r\n\r\njunk" + jpeg + jpeg + "x" + jpeg;
     for (size_t chunk : {stream.size(), size_t(1), size_t(3)}) {
         CAPTURE(chunk);
         bool ok = false;
@@ -232,6 +233,25 @@ TEST_CASE("mjpeg stream parser ignores the Content-Type and reads raw concatenat
         REQUIRE(parts.size() == 3);
         for (const auto &p : parts)
             CHECK(p == first_frame(jpeg));
+    }
+}
+
+TEST_CASE("mjpeg stream parser rejects a text/html answer but accepts other types") {
+    const std::string jpeg = read_jpeg();
+    for (const char *type : {"text/html", "Text/HTML; charset=utf-8"}) {
+        CAPTURE(type);
+        const std::string head = std::string("HTTP/1.0 200 OK\r\nContent-Type: ") + type + "\r\n\r\n";
+        mjpeg::StreamParser p([](const uint8_t *, size_t) {});
+        const std::string s = head + jpeg;
+        CHECK_FALSE(p.feed(reinterpret_cast<const uint8_t *>(s.data()), s.size()));
+        CHECK(p.error().find("not an MJPEG stream") != std::string::npos);
+        CHECK(p.error().find(type) != std::string::npos);
+    }
+    for (const char *head : {"HTTP/1.0 200 OK\r\nContent-Type: image/jpeg\r\n\r\n", "HTTP/1.0 200 OK\r\n\r\n"}) {
+        bool ok = false;
+        const auto parts = run_parser(std::string(head) + jpeg, 1000, &ok);
+        CHECK(ok);
+        CHECK(parts.size() == 1);
     }
 }
 

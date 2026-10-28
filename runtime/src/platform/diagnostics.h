@@ -10,6 +10,12 @@
 
 namespace babble::diag {
 
+// Returns a copy of the config with the values of secret keys, such as upload credentials, as "(not logged)".
+nlohmann::json redacted(const nlohmann::json &cfg);
+
+// Returns the value at the config path as JSON text for the log, or "(not logged)" for a secret key.
+std::string log_value(const std::string &path, const nlohmann::json &value);
+
 // Returns the session header with the version, the system, the config changes, the model files and the USB devices.
 std::vector<std::string> session_info(const nlohmann::json &cfg, const std::filesystem::path &models_dir);
 

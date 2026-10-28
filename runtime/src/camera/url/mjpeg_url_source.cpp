@@ -128,7 +128,12 @@ bool StreamParser::parse_response(std::string_view head) {
         error_ = "server answered \"" + std::string(status.substr(0, status.find('\r'))) + "\"";
         return false;
     }
-    chunked_ = lower(header(head, "transfer-encoding")).find("chunked") != std::string::npos;
+    // A web page instead of the stream would otherwise connect and never show a frame.
+    if (const std::string type = header(head, "content-type"); lower(type).rfind("text/html", 0) == 0) {
+        error_ = "not an MJPEG stream (Content-Type: " + type + ")";
+        return false;
+    }
+    chunked_ =lower(header(head, "transfer-encoding")).find("chunked") != std::string::npos;
     return true;
 }
 
