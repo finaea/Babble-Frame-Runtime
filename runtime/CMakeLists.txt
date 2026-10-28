@@ -228,6 +228,7 @@ if(BABBLE_TESTS)
         tests/test_capture_apps.cpp
         tests/test_runtime_updater.cpp
         tests/test_crop_drag.cpp
+        tests/test_jpeg.cpp
     )
     if(BABBLE_FRUNK_MOUTH)
         target_sources(babble_tests PRIVATE tests/test_stereo_pairer.cpp)
