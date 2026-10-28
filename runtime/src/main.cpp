@@ -4,6 +4,7 @@
 #include "camera/tracking_source.h"
 #include "camera/face_camera_source.h"
 #include "camera/usb/babble_usb_source.h"
+#include "camera/usb/serial_board.h"
 #include "camera/usb/uvc.h"
 #include "capture/app_installer.h"
 #include "update/runtime_updater.h"
@@ -694,15 +695,16 @@ int main(int argc, char **argv) {
     auto refresh_usb_cameras = [&] {
         usb_cameras.clear();
         found_cameras.clear();
-        for (const auto &f : usb::list_uvc()) {
+        for (const auto &f : serial::list_cameras()) {
             char vp[16];
             snprintf(vp, sizeof(vp), "%04x:%04x", f.vendor, f.product);
             std::string detail = vp;
             if (!f.serial.empty())
                 detail += " \u00b7 serial " + f.serial;
             const auto desc = usb::config_descriptor(f);
-            ui::UsbCamera cam{usb::device_id(f), usb::device_label(f), detail};
-            auto info = uvc::parse_config(desc.data(), desc.size());
+            ui::UsbCamera cam{usb::device_id(f), serial::label(f, desc), detail};
+            cam.fixed_mode = serial::is_board(f, desc);
+            auto info = serial::camera_info(f, desc);
             if (info) {
                 cam.iso = !info->bulk;
                 for (const auto &fm : info->formats) {

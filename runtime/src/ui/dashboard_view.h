@@ -94,6 +94,7 @@ struct UsbCamera {
     std::string label;
     std::string detail;   // The USB ID and serial number.
     bool iso = false;     // True if the camera streams over isochronous transfers.
+    bool fixed_mode = false;   // True for a device that sets its own mode, such as an ESP32 serial board.
 
     struct Size {
         int width = 0, height = 0;

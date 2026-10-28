@@ -38,9 +38,11 @@ add_library(babble_core STATIC
     src/camera/eye/dsp_eye_source.cpp
     src/camera/tracking_source.cpp
     src/camera/face_camera_source.cpp
+    src/camera/jpeg_cutter.cpp
     src/camera/url/mjpeg_url_source.cpp
     src/camera/usb/babble_usb_source.cpp
     src/camera/usb/jpeg.cpp
+    src/camera/usb/serial_board.cpp
     src/camera/usb/usb_device.cpp
     src/camera/usb/uvc.cpp
     src/camera/usb/uvc_camera.cpp
@@ -203,6 +205,7 @@ if(BABBLE_TESTS)
         tests/test_config.cpp
         tests/test_tracking_source.cpp
         tests/test_mjpeg_url_source.cpp
+        tests/test_serial_board.cpp
         tests/test_sinks.cpp
         tests/test_image_ops.cpp
         tests/test_tilt_warp.cpp

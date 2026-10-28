@@ -1,5 +1,6 @@
 #include "camera/usb/babble_usb_source.h"
 
+#include "camera/usb/serial_board.h"
 #include "camera/usb/uvc_camera.h"
 #include "core/clock.h"
 #include "core/log.h"
@@ -218,7 +219,7 @@ bool BabbleUsbSource::set_option(const std::string &key, const nlohmann::json &v
 }
 
 std::optional<usb::Found> BabbleUsbSource::pick() const {
-    const auto cams = usb::list_uvc();
+    const auto cams = serial::list_cameras();
     if (LOG.debug_enabled()) {
         std::string list;
         for (const auto &c : cams)
@@ -358,12 +359,21 @@ void BabbleUsbSource::make_preview(const std::string &camera, const uint8_t *gra
 }
 
 void BabbleUsbSource::run(usb::Found dev, uvc::Mode mode) {
+    // An ESP32 serial board sends JPEGs over a serial data interface instead of UVC.
+    if (serial::is_board(dev)) {
+        serial::Board board;
+        return stream(board, serial::kLabel, dev, mode);
+    }
     uvc::Camera cam;
+    stream(cam, usb::device_label(dev), dev, mode);
+}
+
+template <class Cam>
+void BabbleUsbSource::stream(Cam &cam, const std::string &label, const usb::Found &dev, const uvc::Mode &mode) {
     std::string err;
     if (!cam.open(dev, mode, &err)) {
         thread_busy_ = cam.busy();
-        thread_error_ = cam.busy() ? usb::device_label(dev) + " is in use by another program"
-                                   : "cannot open " + usb::device_label(dev) + ": " + err;
+        thread_error_ = cam.busy() ? label + " is in use by another program" : "cannot open " + label + ": " + err;
         failed_ = true;
         return;
     }
@@ -375,7 +385,7 @@ void BabbleUsbSource::run(usb::Found dev, uvc::Mode mode) {
     fps_real_ = 0;
     opened_ = true;
     const std::string transfer = cam.iso() ? "isochronous alt " + std::to_string(cam.iso_alt()) : "bulk";
-    LOG.info("%s: streaming %s (%s, %s): %s %ux%u at %.0f fps, %s", name_.c_str(), usb::device_label(dev).c_str(),
+    LOG.info("%s: streaming %s (%s, %s): %s %ux%u at %.0f fps, %s", name_.c_str(), label.c_str(),
              usb::device_id(dev).c_str(), dev.node.c_str(), uvc::format_label(cam.format()), cam.frame_size().width,
              cam.frame_size().height, p.frame_interval ? 1e7 / p.frame_interval : 0.0, transfer.c_str());
     const uvc::FormatKind format = cam.format();

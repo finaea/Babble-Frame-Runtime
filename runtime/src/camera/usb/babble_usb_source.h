@@ -22,7 +22,8 @@
 namespace babble {
 
 // A USB mouth camera that the source streams through usbfs, because the kernel of the Frame has no uvcvideo
-// driver. Each camera has its own settings under "cameras", keyed by usb::device_id().
+// driver. Each camera has its own settings under "cameras", keyed by usb::device_id(). An ESP32 serial board
+// (serial_board.h) is one more kind of camera.
 class BabbleUsbSource : public ITrackingSource {
 public:
     enum class State { Disabled, Waiting, Streaming, Backoff, Paused };
@@ -89,6 +90,9 @@ private:
     bool start(const usb::Found &dev);
     void stop(const char *why);
     void run(usb::Found dev, uvc::Mode mode);
+    // Streams a uvc::Camera or a serial::Board, which have the same API.
+    template <class Cam>
+    void stream(Cam &cam, const std::string &label, const usb::Found &dev, const uvc::Mode &mode);
     // Applies one camera setting, such as "cameras/<id>" with an object or "cameras/<id>/rotate" with a value.
     bool set_camera_option(const std::string &key, const nlohmann::json &value);
 

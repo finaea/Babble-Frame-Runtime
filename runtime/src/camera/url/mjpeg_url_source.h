@@ -1,5 +1,6 @@
 #pragma once
 
+#include "camera/jpeg_cutter.h"
 #include "camera/tracking_source.h"
 #include "core/metrics.h"
 #include "core/threading.h"
@@ -34,7 +35,7 @@ struct Url {
 bool parse_url(const std::string &in, Url *out, std::string *err);
 
 // The largest JPEG that the parser collects; a longer frame is dropped and the parser looks for the next start.
-constexpr size_t kMaxFrame = 1 << 20;
+constexpr size_t kMaxFrame = JpegCutter::kMaxFrame;
 
 // Builds the value of an "Authorization: Basic" header from username:password.
 std::string basic_auth(const std::string &user, const std::string &password);
@@ -46,33 +47,27 @@ class StreamParser {
 public:
     using OnPart = std::function<void(const uint8_t *data, size_t size)>;
     explicit StreamParser(OnPart on_part, size_t max_frame = kMaxFrame)
-        : on_part_(std::move(on_part)), max_frame_(max_frame) {}
+        : cutter_(std::move(on_part), max_frame) {}
 
     // Returns false on a response that is not a 200, is a web page or is malformed, and error() tells why.
     bool feed(const uint8_t *data, size_t size);
     const std::string &error() const { return error_; }
     bool connected() const { return stage_ != Stage::Response; }   // True after a 200 response header.
-    size_t dropped() const { return dropped_; }                       // Frames dropped for exceeding max_frame.
+    size_t dropped() const { return cutter_.dropped(); }              // Frames dropped for exceeding max_frame.
 
 private:
     enum class Stage { Response, Body };
     enum class Chunk { Size, Data, DataEnd };
     bool parse_response(std::string_view head);
     bool body(const uint8_t *data, size_t size);
-    void scan(const uint8_t *data, size_t size);
 
-    OnPart on_part_;
-    size_t max_frame_;
+    JpegCutter cutter_;
     Stage stage_ = Stage::Response;
     std::string head_, error_;
     bool chunked_ = false;
     Chunk chunk_ = Chunk::Size;
     std::string chunk_line_;
     size_t chunk_left_ = 0;
-    bool in_frame_ = false;
-    uint8_t prev_ = 0;
-    std::vector<uint8_t> frame_;
-    size_t dropped_ = 0;
 };
 
 }

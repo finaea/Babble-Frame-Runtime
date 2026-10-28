@@ -69,9 +69,15 @@ const UsbCamera *camera_in_use(const Status &s) {
 
 // Returns the mode as the Resolution row shows it, such as "Auto" or "640×480 · 30 fps · MJPEG".
 std::string mode_label(const UsbCamera *cam, bool automatic) {
+    char buf[64];
+    if (cam && cam->fixed_mode && !cam->formats.empty() && !cam->formats[0].sizes.empty()) {   // A serial board.
+        const UsbCamera::Size &z = cam->formats[0].sizes[0];
+        snprintf(buf, sizeof(buf), "%d×%d  ·  %d fps  ·  %s", z.width, z.height, z.fps.empty() ? 0 : z.fps[0],
+                 cam->formats[0].label.c_str());
+        return buf;
+    }
     if (!cam || automatic || !cam->settings.width)
         return "Auto";
-    char buf[64];
     snprintf(buf, sizeof(buf), "%d×%d  ·  %d fps  ·  %s", cam->settings.width, cam->settings.height,
              cam->settings.fps, upper(cam->settings.format).c_str());
     return buf;
@@ -538,6 +544,26 @@ void DashboardView::render_resolution(Canvas &c, const Status &s) {
                 rows.push_back({&f, &z});
     const float row_h = 60, tx = kMargin + 84;
     float y = 140;
+    // A serial board sets its own mode, so the page only shows it and sends nothing.
+    if (cam && cam->fixed_mode) {
+        for (const Row &r : rows) {
+            const Rect box{kMargin, y, W - 2 * kMargin, row_h - 8};
+            c.fill_rect(box, kCard, 6);
+            const float base = box.y + box.h / 2 + medium_.cap_height(26) / 2;
+            char buf[48];
+            snprintf(buf, sizeof(buf), "%d × %d", r.size->width, r.size->height);
+            medium_.draw(c, tx, base, buf, 26, kText);
+            std::string label = r.format->label;
+            if (!r.size->fps.empty())
+                label += " · " + std::to_string(r.size->fps.front()) + " fps";
+            regular_.draw(c, tx + 170, base, label, 22, kMuted);
+            const char *hint = "Set by the board.";
+            regular_.draw(c, box.x + box.w - 24 - regular_.measure(hint, 21), box.y + box.h / 2 + regular_.cap_height(21) / 2,
+                          hint, 21, kMuted);
+            y += row_h;
+        }
+        return;
+    }
     const int pages = std::max(1, int((rows.size() + kModeRows) / kModeRows));   // Auto takes the first row.
     fork_.mode_page = std::min(fork_.mode_page, pages - 1);
     if (fork_.mode_page == 0) {

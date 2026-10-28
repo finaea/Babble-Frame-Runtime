@@ -28,6 +28,9 @@ Babble's models and output, and adds:
   or MJPEG-over-HTTP from any streamer, at the dedicated Mouth tab. Include options to set resolution/fps, crops
   or vertical/horizontal flip. (Tested against GC0308 cam only, Vive FT, Serial ESP32 boards and Desktop cams (like
   Logitech) may not be supported yet. Use http stream option instead.)
+- **ESP32 serial boards** (Babble's `babble_wrooms_s3_usb` firmware, such as the ventiFBT mouth tracker, USB
+  `303a:1001`) plugged into the headset show up in the same USB camera list, read over raw USB as in acutevr's bridge.
+  **Untested on hardware.**
 - **Mouth from Baballonia on the PC:** set Camera to PC App on the Mouth page. The runtime then opens no mouth camera
   and runs no mouth model, but with Mouth Tracking on it still tells the VRCFaceTracking module to claim face tracking,
   so the module takes the mouth from Baballonia and the eyes from the headset.

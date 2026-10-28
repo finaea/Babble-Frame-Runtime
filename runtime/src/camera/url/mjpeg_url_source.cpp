@@ -137,39 +137,10 @@ bool StreamParser::parse_response(std::string_view head) {
     return true;
 }
 
-// The JPEG marker scan: everything outside FF D8 ... FF D9 (boundaries, part headers) is ignored.
-void StreamParser::scan(const uint8_t *data, size_t size) {
-    for (size_t i = 0; i < size; i++) {
-        const uint8_t cur = data[i];
-        if (!in_frame_) {
-            if (prev_ == 0xFF && cur == 0xD8) {
-                frame_.clear();
-                frame_.push_back(0xFF);
-                frame_.push_back(0xD8);
-                in_frame_ = true;
-            }
-        } else if (frame_.size() >= max_frame_) {
-            // A frame without an end within the limit is dropped, and the scan looks for the next start.
-            frame_.clear();
-            in_frame_ = false;
-            dropped_++;
-        } else {
-            frame_.push_back(cur);
-            if (prev_ == 0xFF && cur == 0xD9) {
-                on_part_(frame_.data(), frame_.size());
-                frame_.clear();
-                in_frame_ = false;
-                prev_ = 0;   // The D9 must not pair with a following byte.
-                continue;
-            }
-        }
-        prev_ = cur;
-    }
-}
-
+// The cutter ignores everything outside FF D8 ... FF D9 (boundaries, part headers).
 bool StreamParser::body(const uint8_t *data, size_t size) {
     if (!chunked_) {
-        scan(data, size);
+        cutter_.feed(data, size);
         return true;
     }
     size_t i = 0;
@@ -201,7 +172,7 @@ bool StreamParser::body(const uint8_t *data, size_t size) {
         }
         case Chunk::Data: {
             const size_t n = std::min(chunk_left_, size - i);
-            scan(data + i, n);
+            cutter_.feed(data + i, n);
             i += n;
             chunk_left_ -= n;
             if (chunk_left_ == 0)

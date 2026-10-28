@@ -758,6 +758,37 @@ TEST_CASE("a Resolution pick sends one whole entry for the camera and a scaled c
     CHECK(autopick.changes[0].second.contains("flip_v"));
 }
 
+TEST_CASE("the Resolution page of a serial board only shows its fixed mode and sends nothing") {
+    DashboardView view;
+    REQUIRE(view.load_fonts(kFonts));
+    Canvas c(DashboardView::kWidth, DashboardView::kHeight);
+    Status s{true, Worn::Yes, on(Health::Working, 120), on(Health::Working, 90)};
+    s.mouth_source = "usb";
+    UsbCamera cam{"303a:8000@1-2", "Babble Tracker", "303a:8000", false};
+    cam.fixed_mode = true;
+    cam.formats = {{"mjpeg", "MJPEG", {{240, 240, {30}}}}};
+    s.cameras = {cam};
+    s.usb_stream.state = UsbStream::State::Streaming;
+    s.usb_stream.camera = cam.id;
+    s.usb_stream.format = "mjpeg";
+    s.usb_stream.width = 240;
+    s.usb_stream.height = 240;
+    PageData d;
+    d.config = std::make_shared<const nlohmann::json>(nlohmann::json{{"sources", {{"face", {{"mode", "usb"}}}}}});
+    view.set_page_data(std::move(d));
+    view.set_page(DashboardView::Page::Resolution);
+    view.render(c, s, {}, std::nullopt);
+
+    // Clicking over the whole list, where Auto and the rate chips would be, sends no change.
+    for (float y = 130; y < 400; y += 10)
+        for (float x = 60; x < DashboardView::kWidth - 56; x += 20) {
+            auto r = view.click({x, y});
+            CHECK(r.changes.empty());
+            CHECK_FALSE(r.setting);
+            CHECK(view.page() == DashboardView::Page::Resolution);
+        }
+}
+
 TEST_CASE("the eye page opens Eyelids & Gaze and Squint, and back returns to it") {
     DashboardView view;
     REQUIRE(view.load_fonts(kFonts));
