@@ -437,6 +437,8 @@ TEST_CASE("load_config moves the fork's mouth camera settings into the camera en
     const json expect_cam = {{"format", "yuy2"}, {"width", 432}, {"height", 240}, {"fps", 30},
                              {"rotate", 90},     {"flip_h", false}, {"flip_v", false}};
     const json saved = json::parse(slurp(settings));
+    CHECK(saved["migrations"]["face_camera"] == 1);   // The move is saved with its marker.
+    CHECK_FALSE(cl.config.contains("migrations"));
     for (const json *doc : {&cl.config, &saved}) {
         CHECK((*doc)["sources"]["face"]["cameras"][id] == expect_cam);
         CHECK((*doc)["pipelines"]["face"]["rotate"] == 0);
@@ -518,7 +520,10 @@ TEST_CASE("the mouth camera move leaves everything alone without a camera, in UR
     for (const std::string &text : texts) {
         std::ofstream(settings, std::ios::trunc) << text;
         const ConfigLoad cl = load_config(dir / "none.json", settings);
-        CHECK(slurp(settings) == text);   // Not rewritten.
+        json expect = json::parse(text);
+        expect["migrations"] = {{"face_camera", 1}};   // Only the marker is added.
+        CHECK(json::parse(slurp(settings)) == expect);
+        CHECK_FALSE(cl.config.contains("migrations"));
         CHECK(cl.config["pipelines"]["face"]["rotate"] == 270);
         CHECK(cl.config["sources"]["face"]["cameras"].value(id, json::object()).value("rotate", 0) == 0);
     }
@@ -533,5 +538,55 @@ TEST_CASE("the mouth camera move leaves everything alone without a camera, in UR
     std::ofstream(settings, std::ios::trunc) << R"({"sources":{"face":{"camera":"0c45:6366:SN0001","format":"auto"}}})";
     CHECK_FALSE(load_config(dir / "none.json", settings).config["sources"]["face"].contains("format"));
     CHECK_FALSE(json::parse(slurp(settings))["sources"]["face"].contains("format"));
+    fs::remove_all(dir);
+}
+
+TEST_CASE("a settings file with the marker keeps a Stream URL turn and is not rewritten") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("babble_cfg_cam3_" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    const fs::path settings = dir / "settings.json";
+    const std::string id = "0c45:6366:SN0001";
+    const std::string text = R"({"migrations":{"face_camera":1},"sources":{"face":{"mode":"usb","camera":"0c45:6366:SN0001"}},)"
+                             R"("pipelines":{"face":{"rotate":90}}})";
+    std::ofstream(settings) << text;
+    const ConfigLoad cl = load_config(dir / "none.json", settings);
+    CHECK(cl.config["pipelines"]["face"]["rotate"] == 90);
+    CHECK_FALSE(cl.config["sources"]["face"]["cameras"].value(id, json::object()).contains("rotate"));
+    CHECK_FALSE(cl.config.contains("migrations"));
+    CHECK(slurp(settings) == text);
+    fs::remove_all(dir);
+}
+
+TEST_CASE("the first load without a settings file creates one that holds only the marker") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("babble_cfg_cam4_" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    const fs::path settings = dir / "settings.json";
+    const ConfigLoad cl = load_config(dir / "none.json", settings);
+    REQUIRE(fs::exists(settings));
+    CHECK(json::parse(slurp(settings)) == json({{"migrations", {{"face_camera", 1}}}}));
+    CHECK(cl.settings_overrides.empty());
+    CHECK_FALSE(cl.config.contains("migrations"));
+    fs::remove_all(dir);
+}
+
+TEST_CASE("load_config keeps USB ids as numbers, camera controls as switches and the updater's prereleases as a switch") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("babble_cfg_flex_" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    const fs::path settings = dir / "settings.json";
+    std::ofstream(settings) << R"({"migrations":{"face_camera":1},"sources":{"face":{"vendor":1133,"product":2093},)"
+                               R"("mouth":{"controls_on_start":true}},"update":{"prereleases":true},)"
+                               R"("capture":{"app":{"prereleases":"yes"}}})";
+    const ConfigLoad cl = load_config(dir / "none.json", settings);
+    CHECK(cl.config["sources"]["face"]["vendor"] == 1133);
+    CHECK(cl.config["sources"]["face"]["product"] == 2093);
+    CHECK(cl.config["sources"]["mouth"]["controls_on_start"] == true);
+    CHECK(cl.config["update"]["prereleases"] == true);
+    // Only the updater's own option is flexible.
+    CHECK(cl.config["capture"]["app"]["prereleases"] == false);
+    REQUIRE(cl.type_fixes.size() == 1);
+    CHECK(cl.type_fixes[0].find("/capture/app/prereleases") != std::string::npos);
     fs::remove_all(dir);
 }

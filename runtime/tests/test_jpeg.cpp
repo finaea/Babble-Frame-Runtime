@@ -97,3 +97,12 @@ TEST_CASE("a frame that already has tables decodes exactly as plain stb_image do
     CHECK(h == rh);
     CHECK(px == raw);
 }
+
+TEST_CASE("a frame that ends inside a run of 0xff fill bytes is refused without reading past the end") {
+    const std::vector<std::vector<uint8_t>> frames = {{0xff, 0xd8, 0xff, 0xff}, {0xff, 0xd8, 0xff, 0xff, 0xff}};
+    for (const auto &f : frames) {
+        std::vector<uint8_t> px(16);
+        int w = 0, h = 0;
+        CHECK_FALSE(jpeg::decode_gray(f.data(), f.size(), px.data(), px.size(), &w, &h));
+    }
+}

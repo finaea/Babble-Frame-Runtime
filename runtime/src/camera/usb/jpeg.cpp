@@ -68,6 +68,8 @@ size_t sos_without_dht(const uint8_t *data, size_t size) {
             return 0;
         while (i + 1 < size && data[i + 1] == 0xff)
             i++;
+        if (i + 1 >= size)
+            return 0;
         const uint8_t marker = data[i + 1];
         if (marker == 0xda)
             return i;

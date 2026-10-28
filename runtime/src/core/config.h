@@ -62,7 +62,8 @@ bool migrate_gaze_smoothing(json &config, const std::vector<const json *> &layer
 // - In USB mode, the model-side "pipelines.face.rotate" (counter-clockwise) and "flip" become the clockwise turn and
 //   flips of the camera, unless it has a saved turn or flip. The crop box turns with the frame, or becomes the whole
 //   frame if it does not fit the saved size, and the model-side turn becomes 0 and "none".
-// Returns true if it changed anything.
+// Returns true if it changed anything. load_config runs it only while "migrations.face_camera" is not in the settings
+// file, and then saves that marker.
 bool migrate_face_camera(json &config, json &settings, const json &defaults);
 
 // Resets each key of cfg that has a JSON kind different from defaults, and returns the keys that it reset.

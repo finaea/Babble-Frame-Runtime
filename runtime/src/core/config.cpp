@@ -45,15 +45,19 @@ const char *kind(const json &j) {
     return "null";
 }
 
-// These options can have more than one type, for example "ipd" can be "auto" or a value in metres.
-bool flexible(const std::string &key) { return key == "ipd" || key == "one_euro" || key == "pupil_one_euro_mm"; }
+// These options can have more than one type, for example "ipd" can be "auto" or a value in metres, a USB id a number
+// or a hex string, a camera control a number or a switch, and the updater's "prereleases" "auto" or a switch.
+bool flexible(const std::string &key, const std::string &path) {
+    return key == "ipd" || key == "one_euro" || key == "pupil_one_euro_mm" || key == "vendor" || key == "product" ||
+           key == "controls_on_start" || key == "strobe" || path == "/update/prereleases";
+}
 
 void fix_types_at(json &cfg, const json &defaults, const std::string &path, std::vector<std::string> &fixed) {
     for (auto it = defaults.begin(); it != defaults.end(); ++it) {
-        if (!cfg.contains(it.key()) || it.value().is_null() || flexible(it.key()))
+        const std::string p = path + "/" + it.key();
+        if (!cfg.contains(it.key()) || it.value().is_null() || flexible(it.key(), p))
             continue;
         json &v = cfg[it.key()];
-        const std::string p = path + "/" + it.key();
         if (it.value().is_object() && v.is_object()) {
             fix_types_at(v, it.value(), p, fixed);
         } else if (std::string(kind(v)) != kind(it.value())) {
@@ -375,18 +379,27 @@ ConfigLoad load_config(const std::optional<std::filesystem::path> &user_file_ove
     out.legacy_output = migrate_output_choice(out.config, {&user_layer, &settings_layer});
     migrate_face_mirror(out.config, {&user_layer, &settings_layer});
     migrate_gaze_smoothing(out.config, {&user_layer, &settings_layer});
-    // The mouth camera move is saved once, so that a later camera turn is not added to the old model-side one. A
-    // broken settings file stays as it is for inspection.
-    if (settings_state != Layer::Broken && migrate_face_camera(out.config, settings_layer, defaults ? *defaults : json())) {
+    // The mouth camera move runs on the first load only, which saves a marker, so that a later Stream URL turn is not
+    // taken for an old USB turn. A broken settings file stays as it is for inspection.
+    const json::json_pointer moved_ptr("/migrations/face_camera");
+    if (settings_state != Layer::Broken && !settings_layer.contains(moved_ptr)) {
+        const bool moved = migrate_face_camera(out.config, settings_layer, defaults ? *defaults : json());
+        if (!settings_layer["migrations"].is_object())
+            settings_layer["migrations"] = json::object();
+        settings_layer[moved_ptr] = 1;
         std::string err;
         if (write_settings(out.settings_file, settings_layer, &err)) {
-            LOG.info("config: moved the mouth camera settings into %s (saved to %s)",
-                     out.config["sources"]["face"].value("camera", "").c_str(), out.settings_file.c_str());
+            if (moved)
+                LOG.info("config: moved the mouth camera settings into %s (saved to %s)",
+                         out.config["sources"]["face"].value("camera", "").c_str(), out.settings_file.c_str());
             out.settings_loaded = true;
         } else {
-            LOG.warn("config: moving the mouth camera settings: %s", err.c_str());
+            LOG.warn("config: saving the mouth camera settings move: %s", err.c_str());
         }
     }
+    // The markers are for the loader only.
+    out.config.erase("migrations");
+    settings_layer.erase("migrations");
     if (out.settings_loaded)
         leaves(settings_layer, "", out.settings_overrides);
     if (defaults)

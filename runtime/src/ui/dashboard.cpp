@@ -59,6 +59,9 @@ void Dashboard::stop() {
         options_.frame_preview->set_open(false);
     if (options_.model_view)
         options_.model_view->set_open(false);
+    // The owners can go before the destructor calls stop() again, and start() sets both again.
+    options_.frame_preview = nullptr;
+    options_.model_view = nullptr;
 }
 
 void Dashboard::release_gpu() { gpu_.release(); }
@@ -305,8 +308,15 @@ void Dashboard::present() {
         dirty_ = false;
     }
     status.eyes = drawn_eyes_ = read_eyes();
-    if (view_.live_page())
+    // Every page can read the config, and only the live pages need the signals and previews.
+    if (view_.live_page()) {
         view_.set_page_data(read_page_data());
+    } else {
+        PageData d;
+        std::lock_guard<std::mutex> lock(mutex_);
+        d.config = config_;
+        view_.set_page_data(std::move(d));
+    }
     if (view_.page() == DashboardView::Page::CameraOptions && !preview_.gray.empty())
         status.preview = &preview_;
     last_present_ns_ = mono_ns();
