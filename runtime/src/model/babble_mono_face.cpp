@@ -134,6 +134,13 @@ bool BabbleMonoFace::set_option(const std::string &key, const nlohmann::json &va
     }
     if (key == "roi_square")
         return value.is_boolean();   // The square lock of the crop box is for the tab only.
+    if (key == "source_mode") {
+        // The fork's face source mode: the rotate and flip below are for Stream URL, and USB mode skips them.
+        if (!value.is_string())
+            return false;
+        usb_mode_ = value == "usb";
+        return true;
+    }
     if (key == "rotate") {
         // The Babble tab sends numbers as doubles, so accept a double that is a whole number.
         if (!value.is_number())
@@ -167,8 +174,10 @@ void BabbleMonoFace::prepare(const Frame &f, float *input) {
     const uint32_t w = std::min<uint32_t>(cur.width, kMaxSide), h = std::min<uint32_t>(cur.height, kMaxSide);
     cur.width = w;
     cur.height = h;
-    // The USB source already applies the rotation and flips of each camera, so these are for special setups.
-    if ((gain_ != 1.0f || flip_h_ || flip_v_ || quarter_turns_) && tmp_a_.size() < size_t(w) * h) {
+    // The USB source already applies the rotation and flips of each camera, so these are for the other modes.
+    const bool fh = flip_h_ && !usb_mode_, fv = flip_v_ && !usb_mode_;
+    const int turns = usb_mode_ ? 0 : quarter_turns_;
+    if ((gain_ != 1.0f || fh || fv || turns) && tmp_a_.size() < size_t(w) * h) {
         tmp_a_.resize(size_t(w) * h);
         tmp_b_.resize(size_t(w) * h);
     }
@@ -180,23 +189,23 @@ void BabbleMonoFace::prepare(const Frame &f, float *input) {
                     uint8_t(std::clamp(std::lround(cur.data[size_t(y) * cur.stride + x] * gain_), 0L, 255L));
         cur = {tmp_a_.data(), w, h, w};
     }
-    if (flip_h_ || flip_v_) {
+    if (fh || fv) {
         uint8_t *dst = cur.data == tmp_a_.data() ? tmp_b_.data() : tmp_a_.data();
-        if (flip_h_) {
+        if (fh) {
             img::flip_horizontal(cur, {dst, w, h, w});
             cur = {dst, w, h, w};
         }
-        if (flip_v_) {
+        if (fv) {
             uint8_t *dst2 = cur.data == tmp_a_.data() ? tmp_b_.data() : tmp_a_.data();
             img::flip_vertical(cur, {dst2, w, h, w});
             cur = {dst2, w, h, w};
         }
     }
-    if (quarter_turns_) {
+    if (turns) {
         uint8_t *dst = cur.data == tmp_a_.data() ? tmp_b_.data() : tmp_a_.data();
-        const bool swap_wh = quarter_turns_ % 2 == 1;
+        const bool swap_wh = turns % 2 == 1;
         img::Mut rotated{dst, swap_wh ? h : w, swap_wh ? w : h, swap_wh ? h : w};
-        img::rotate(cur, rotated, quarter_turns_);
+        img::rotate(cur, rotated, turns);
         cur = rotated;
     }
     img::Mut small{small_.data(), kSize, kSize, kSize};

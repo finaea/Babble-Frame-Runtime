@@ -152,9 +152,10 @@ void DashboardView::render_mouth(Canvas &c, const Status &s) {
             PreviewTransform tf;
             tf.w = float(img->width);
             tf.h = float(img->height);
-            const json rot = setting("/pipelines/face/rotate", 0);
+            // The model-side rotate and flip are for Stream URL; in USB mode the frame comes turned by the camera.
+            const json rot = usb_mode ? json(0) : setting("/pipelines/face/rotate", 0);
             tf.q = rot.is_number() ? (int(rot.get<double>()) / 90 % 4 + 4) % 4 : 0;
-            const json flip = setting("/pipelines/face/flip", "none");
+            const json flip = usb_mode ? json("none") : setting("/pipelines/face/flip", "none");
             const std::string fl = flip.is_string() ? flip.get<std::string>() : "none";
             tf.fh = fl.find('h') != std::string::npos;
             tf.fv = fl.find('v') != std::string::npos;
@@ -310,13 +311,72 @@ void DashboardView::render_mouth(Canvas &c, const Status &s) {
             render_text_field(c, {x + 20, y + 62, cw - 40, 56}, "/sources/face/url", url, "http://127.0.0.1:8082/");
             y += 132;
         }
-        card(88, "Rotate", "", 0);
-        render_value_segments(c, right, y + 8, "/pipelines/face/rotate", {"0°", "90°", "180°", "270°"},
-                              {0, 90, 180, 270}, 100);
-        y += 88;
-        card(88, "Flip", "", 0);
-        render_value_segments(c, right, y + 8, "/pipelines/face/flip", {"None", "Mirror", "Vertical", "Both"},
-                              {"none", "h", "v", "hv"}, 112);
+        // The labels turn clockwise in every mode. USB mode saves the turn for the camera, whose source turns
+        // clockwise before the crop; the other modes save it for the model, which turns counter-clockwise after it.
+        const std::vector<std::string> rot_labels{"0°", "90°", "180°", "270°"}, flip_labels{"None", "Mirror", "Vertical", "Both"};
+        const UsbCamera *turn_cam = usb_mode ? camera_in_use(s) : nullptr;
+        if (usb_mode && !turn_cam) {
+            card(88, "Rotate", "Connect a camera first.", cw - 200);
+            y += 88;
+            card(88, "Flip", "", 0);
+        } else if (usb_mode) {
+            const CameraTurn now = camera_turn(*turn_cam);
+            // The frame size from the camera, before its turn, which the crop box follows.
+            const bool streams = s.usb_stream.state == State::Streaming && s.usb_stream.camera == turn_cam->id;
+            const float fw = streams ? s.usb_stream.width : float(turn_cam->settings.width);
+            const float fh = streams ? s.usb_stream.height : float(turn_cam->settings.height);
+            const std::string cam_ptr = camera_setting_id(turn_cam->id);
+            // One click sends the changed camera fields and the crop box turned with them. The model-side turn stays
+            // for Stream URL, and USB mode skips it.
+            auto turn_to = [&](CameraTurn next) {
+                json b = json::array();
+                if (next == now)
+                    return b;
+                if (next.rotate != now.rotate)
+                    b.push_back(json::array({cam_ptr + "/rotate", next.rotate}));
+                if (next.flip_h != now.flip_h)
+                    b.push_back(json::array({cam_ptr + "/flip_h", next.flip_h}));
+                if (next.flip_v != now.flip_v)
+                    b.push_back(json::array({cam_ptr + "/flip_v", next.flip_v}));
+                const json roi = setting("/pipelines/face/roi", json::array());
+                if (roi.is_array() && roi.size() == 4 && roi[2].is_number() && roi[3].is_number()) {
+                    const bool side = now.rotate % 180 == 90;   // The box is in the turned frame.
+                    const float tw = side ? fh : fw, th = side ? fw : fh;
+                    const Rect r{roi[0].get<float>(), roi[1].get<float>(), roi[2].get<float>(), roi[3].get<float>()};
+                    if (fw <= 0 || fh <= 0)
+                        b.push_back(json::array({"/pipelines/face/roi", json::array()}));
+                    else if (r.w > 0 && r.h > 0 && r.x + r.w <= tw && r.y + r.h <= th) {
+                        const Rect t = turn_crop(r, fw, fh, now, next);
+                        b.push_back(json::array({"/pipelines/face/roi", json::array({std::lround(t.x), std::lround(t.y),
+                                                                                     std::lround(t.w), std::lround(t.h)})}));
+                    }
+                }
+                return b;
+            };
+            card(88, "Rotate", "For this camera", cw - 460);
+            const json rot_now = now.rotate;
+            render_value_segments(c, right, y + 8, "", rot_labels, {0, 90, 180, 270}, 100, &rot_now);
+            for (size_t k = 0; k < 4; k++) {
+                Hit &h = hits_[hits_.size() - 4 + k];
+                h.text = "turn";
+                h.data = turn_to({int(k) * 90, now.flip_h, now.flip_v});
+            }
+            y += 88;
+            card(88, "Flip", "", 0);
+            const json flip_now = int(now.flip_h) + 2 * int(now.flip_v);
+            render_value_segments(c, right, y + 8, "", flip_labels, {0, 1, 2, 3}, 112, &flip_now);
+            for (size_t k = 0; k < 4; k++) {
+                Hit &h = hits_[hits_.size() - 4 + k];
+                h.text = "turn";
+                h.data = turn_to({now.rotate, bool(k & 1), bool(k & 2)});
+            }
+        } else {
+            card(88, "Rotate", "", 0);
+            render_value_segments(c, right, y + 8, "/pipelines/face/rotate", rot_labels, {0, 270, 180, 90}, 100);
+            y += 88;
+            card(88, "Flip", "", 0);
+            render_value_segments(c, right, y + 8, "/pipelines/face/flip", flip_labels, {"none", "h", "v", "hv"}, 112);
+        }
         if (!pc_mode) {
             const Rect whole = render_small_button(c, W - kMargin, kBottomY, "Whole Frame", "crop:whole");
             // The square lock, with its label, left of Whole Frame.
@@ -399,6 +459,17 @@ bool DashboardView::automatic_mode(const UsbCamera &cam) const {
            std::fabs(entry.value("fps", 0.0) - (fps.is_number() ? fps.get<double>() : 30.0)) < 0.5;
 }
 
+CameraTurn DashboardView::camera_turn(const UsbCamera &cam) const {
+    // A field that this view just sent wins over the settings from the last status.
+    const std::string ptr = camera_setting_id(cam.id);
+    CameraTurn t{cam.settings.rotate, cam.settings.flip_h, cam.settings.flip_v};
+    t.rotate = number(setting(ptr + "/rotate", t.rotate), t.rotate);
+    const json fh = setting(ptr + "/flip_h", t.flip_h), fv = setting(ptr + "/flip_v", t.flip_v);
+    t.flip_h = fh.is_boolean() ? fh.get<bool>() : t.flip_h;
+    t.flip_v = fv.is_boolean() ? fv.get<bool>() : t.flip_v;
+    return t;
+}
+
 // The Resolution page: Auto, then a row for each format and size of the camera in use, with its rates. A pick saves
 // the whole settings entry of that camera, as upstream's Camera Options page does.
 void DashboardView::render_resolution(Canvas &c, const Status &s) {
@@ -415,13 +486,14 @@ void DashboardView::render_resolution(Canvas &c, const Status &s) {
     const json roi = setting("/pipelines/face/roi", json::array());
     const json sq = setting("/pipelines/face/roi_square", true);
     const bool square = !sq.is_boolean() || sq.get<bool>();
+    const CameraTurn turn = cam ? camera_turn(*cam) : CameraTurn{};
     auto batch = [&](const UsbCamera::Settings &next, int nw, int nh) {
         json b = json::array({json::array({camera_setting_id(cam->id),
                                            {{"format", next.format}, {"width", next.width}, {"height", next.height},
-                                            {"fps", next.fps}, {"rotate", next.rotate}, {"flip_h", next.flip_h},
-                                            {"flip_v", next.flip_v}}})});
+                                            {"fps", next.fps}, {"rotate", turn.rotate}, {"flip_h", turn.flip_h},
+                                            {"flip_v", turn.flip_v}}})});
         int sw = s.usb_stream.width, sh = s.usb_stream.height;
-        if (cam->settings.rotate % 180 == 90) {   // The crop box is in the turned frame.
+        if (turn.rotate % 180 == 90) {   // The crop box is in the turned frame.
             std::swap(sw, sh);
             std::swap(nw, nh);
         }

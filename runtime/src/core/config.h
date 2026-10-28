@@ -37,6 +37,8 @@ std::filesystem::path default_settings_file();
 // Sets one value in the settings file and replaces the file atomically.
 bool save_setting(const std::filesystem::path &settings_file, const json::json_pointer &where, const json &value,
                   std::string *error);
+// Replaces the settings file with doc atomically.
+bool write_settings(const std::filesystem::path &settings_file, const json &doc, std::string *error);
 
 // The merge that load_config uses, which is public for the tests.
 json merge_config(json defaults, const json &user);
@@ -52,6 +54,16 @@ bool migrate_face_mirror(json &config, const std::vector<const json *> &layers);
 // level, where off is 0. In each layer a numeric "smoothing" is newer and wins. The layers are oldest first. Returns
 // true if it changed a value.
 bool migrate_gaze_smoothing(json &config, const std::vector<const json *> &layers);
+
+// Moves the fork's mouth camera settings into the entry of the selected USB camera ("sources.face.cameras.<id>"),
+// where V1.2 keeps them, and changes settings (the settings file layer) the same way so that it can be saved:
+// - The old "sources.face.format", "width", "height" and "fps" become the mode of the camera, unless it has a saved
+//   format; "width", "height" and "fps" go back to the defaults, and the old "format" goes.
+// - In USB mode, the model-side "pipelines.face.rotate" (counter-clockwise) and "flip" become the clockwise turn and
+//   flips of the camera, unless it has a saved turn or flip. The crop box turns with the frame, or becomes the whole
+//   frame if it does not fit the saved size, and the model-side turn becomes 0 and "none".
+// Returns true if it changed anything.
+bool migrate_face_camera(json &config, json &settings, const json &defaults);
 
 // Resets each key of cfg that has a JSON kind different from defaults, and returns the keys that it reset.
 std::vector<std::string> fix_types(json &cfg, const json &defaults);

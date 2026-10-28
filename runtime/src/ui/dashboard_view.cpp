@@ -953,7 +953,8 @@ void DashboardView::render_cameras(Canvas &c, const std::vector<Choice> &choices
     };
     std::vector<Row> rows{{"", "Automatic", "Use a connected Babble tracker, or the first available camera."}};
     for (const auto &cam : s.cameras)
-        rows.push_back({cam.id, cam.label, cam.detail + (cam.iso ? " \u00b7 isochronous" : ""), true});
+        // No options button: the fork's Mouth page sets the camera, so Camera Options stays out of reach.
+        rows.push_back({cam.id, cam.label, cam.detail + (cam.iso ? " \u00b7 isochronous" : ""), false});
     const bool selected_missing =
         !s.camera.empty() &&
         std::none_of(s.cameras.begin(), s.cameras.end(), [&](const UsbCamera &cam) { return cam.id == s.camera; });

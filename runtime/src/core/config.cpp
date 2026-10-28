@@ -5,9 +5,13 @@
 #include "defaults_json.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <optional>
 #include <sstream>
+#include <utility>
 
 namespace {
 const babble::log::Logger LOG("config");
@@ -170,6 +174,136 @@ bool migrate_gaze_smoothing(json &config, const std::vector<const json *> &layer
     return true;
 }
 
+namespace {
+
+// Returns the number at ptr rounded to an int, or fallback if it is missing or not a number.
+int int_at(const json &j, const char *ptr, int fallback) {
+    const json::json_pointer p(ptr);
+    return j.contains(p) && j[p].is_number() ? int(std::lround(j[p].get<double>())) : fallback;
+}
+
+// Returns "303a:8000" for a vendor or product id given as a hex string or a number, as usb::device_id writes them.
+std::string usb_pair(const json &face) {
+    auto id = [&](const char *key, unsigned fallback) {
+        const json v = face.value(key, json());
+        return v.is_number_unsigned() ? v.get<unsigned>()
+               : v.is_string()        ? unsigned(std::strtoul(v.get<std::string>().c_str(), nullptr, 16))
+                                      : fallback;
+    };
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%04x:%04x", id("vendor", 0x303a), id("product", 0x8000));
+    return buf;
+}
+
+// Returns the box [x, y, w, h] of a fw x fh frame after the USB source flips the frame and turns it clockwise.
+json turn_box(const json &roi, int fw, int fh, int rotate, bool flip_h, bool flip_v) {
+    auto at = [&](double x, double y) -> std::pair<double, double> {
+        if (flip_h)
+            x = fw - x;
+        if (flip_v)
+            y = fh - y;
+        switch (rotate) {
+        case 90: return {fh - y, x};
+        case 180: return {fw - x, fh - y};
+        case 270: return {y, fw - x};
+        default: return {x, y};
+        }
+    };
+    const double x = roi[0].get<double>(), y = roi[1].get<double>(), w = roi[2].get<double>(), h = roi[3].get<double>();
+    const auto [ax, ay] = at(x, y);
+    const auto [bx, by] = at(x + w, y + h);
+    return json::array({std::lround(std::min(ax, bx)), std::lround(std::min(ay, by)), std::lround(std::fabs(bx - ax)),
+                        std::lround(std::fabs(by - ay))});
+}
+
+}
+
+bool migrate_face_camera(json &config, json &settings, const json &defaults) {
+    const json &face = section(section(config, "sources"), "face");
+    const json cam_id = face.value("camera", json());
+    if (!cam_id.is_string() || cam_id.get<std::string>().empty() ||
+        (face.contains("cameras") && !face["cameras"].is_object()))
+        return false;
+    const std::string id = cam_id.get<std::string>();
+    std::string token;   // The id as a JSON pointer token, as the dashboard escapes it.
+    for (char ch : id)
+        token += ch == '~' ? "~0" : ch == '/' ? "~1" : std::string(1, ch);
+    const json::json_pointer cam_ptr("/sources/face/cameras/" + token);
+    json cam = config.contains(cam_ptr) && config[cam_ptr].is_object() ? config[cam_ptr] : json::object();
+    if (config.contains(cam_ptr) && !config[cam_ptr].is_object())
+        return false;
+    json changes = json::object();   // The new values, by JSON pointer.
+    std::vector<std::string> erase;   // The keys of sources.face that go.
+
+    // The fork saved one mode for every camera, with "yuyv" for upstream's "yuy2".
+    int fw = int_at(config, "/sources/face/width", 240), fh = int_at(config, "/sources/face/height", 240);
+    const json old_format = face.value("format", json());
+    if (old_format.is_string()) {
+        const std::string f = old_format == "yuyv" ? "yuy2" : old_format.get<std::string>();
+        if ((f == "mjpeg" || f == "yuy2") && !cam.contains("format")) {
+            cam["format"] = f;
+            cam["width"] = fw;
+            cam["height"] = fh;
+            cam["fps"] = face.contains("fps") && face["fps"].is_number() ? face["fps"] : json(30);
+            for (const char *key : {"width", "height", "fps"}) {
+                const json &d = section(section(defaults, "sources"), "face");
+                if (d.contains(key))
+                    changes["/sources/face/" + std::string(key)] = d[key];
+            }
+        }
+        erase.push_back("format");
+    } else if (cam.contains("width") && cam.contains("height")) {
+        fw = int_at(cam, "/width", fw);
+        fh = int_at(cam, "/height", fh);
+    }
+
+    // The model-side turn was counter-clockwise, and the camera turns clockwise; flips come before the turn in both.
+    const json mode = face.value("mode", json("usb"));
+    const int rot = int_at(config, "/pipelines/face/rotate", 0);
+    const json::json_pointer flip_ptr("/pipelines/face/flip");
+    const std::string flip = config.contains(flip_ptr) && config[flip_ptr].is_string() ? config[flip_ptr].get<std::string>()
+                                                                                       : "none";
+    const bool mh = flip.find('h') != std::string::npos, mv = flip.find('v') != std::string::npos;
+    if (mode == "usb" && !cam.contains("rotate") && !cam.contains("flip_h") && !cam.contains("flip_v") &&
+        (rot == 90 || rot == 180 || rot == 270 || mh || mv) && rot % 90 == 0 && rot >= 0 && rot < 360) {
+        const int cw = (360 - rot) % 360;
+        // The Babble tracker's default mirror (tracker_flip_h) stays, with the model-side flip on top of it.
+        const bool tracker = id.starts_with(usb_pair(face)) && id.size() > 9 && (id[9] == ':' || id[9] == '@') &&
+                             face.value("tracker_flip_h", json(true)) == true;
+        cam["rotate"] = cw;
+        cam["flip_h"] = tracker != mh;
+        cam["flip_v"] = mv;
+        changes["/pipelines/face/rotate"] = 0;
+        changes["/pipelines/face/flip"] = "none";
+        const json::json_pointer roi_ptr("/pipelines/face/roi");
+        const json roi = config.contains(roi_ptr) ? config[roi_ptr] : json::array();
+        if (roi.is_array() && roi.size() == 4 && std::all_of(roi.begin(), roi.end(), [](const json &v) {
+                return v.is_number() && v.get<double>() >= 0;
+            })) {
+            const bool fits = roi[2].get<double>() > 0 && roi[3].get<double>() > 0 &&
+                              roi[0].get<double>() + roi[2].get<double>() <= fw &&
+                              roi[1].get<double>() + roi[3].get<double>() <= fh;
+            changes["/pipelines/face/roi"] = fits ? turn_box(roi, fw, fh, cw, mh, mv) : json::array();
+        }
+    }
+    if (changes.empty() && erase.empty())
+        return false;
+
+    if (cam != (config.contains(cam_ptr) ? config[cam_ptr] : json()))
+        changes[cam_ptr.to_string()] = cam;
+    for (auto &[ptr, value] : changes.items()) {
+        config[json::json_pointer(ptr)] = value;
+        settings[json::json_pointer(ptr)] = value;
+    }
+    for (const std::string &key : erase) {
+        config["sources"]["face"].erase(key);
+        if (settings.contains("sources") && settings["sources"].is_object() && settings["sources"].contains("face") &&
+            settings["sources"]["face"].is_object())
+            settings["sources"]["face"].erase(key);
+    }
+    return true;
+}
+
 std::filesystem::path default_settings_file() { return paths::config_dir() / "settings.json"; }
 
 bool save_setting(const std::filesystem::path &settings_file, const json::json_pointer &where, const json &value,
@@ -196,6 +330,10 @@ bool save_setting(const std::filesystem::path &settings_file, const json::json_p
         }
     }
     doc[where] = value;
+    return write_settings(settings_file, doc, error);
+}
+
+bool write_settings(const std::filesystem::path &settings_file, const json &doc, std::string *error) {
     std::filesystem::path tmp = settings_file;
     tmp += ".tmp";
     {
@@ -224,21 +362,33 @@ ConfigLoad load_config(const std::optional<std::filesystem::path> &user_file_ove
         LOG.error("built-in defaults.json is invalid: %s", err.c_str());
         out.config = json::object();
     } else {
-        out.config = std::move(*defaults);
+        out.config = *defaults;   // A copy, because the migrations and fix_types below read the defaults.
     }
 
     out.user_file = user_file_override ? *user_file_override : paths::config_dir() / "config.json";
     json user_layer;
     out.user_loaded = merge_layer(out.user_file, out.config, &out.error, &user_layer) == Layer::Loaded;
     out.settings_file = settings_file_override ? *settings_file_override : default_settings_file();
-    json settings_layer;
-    out.settings_loaded =
-        merge_layer(out.settings_file, out.config, &out.settings_error, &settings_layer) == Layer::Loaded;
-    if (out.settings_loaded)
-        leaves(settings_layer, "", out.settings_overrides);
+    json settings_layer = json::object();
+    const Layer settings_state = merge_layer(out.settings_file, out.config, &out.settings_error, &settings_layer);
+    out.settings_loaded = settings_state == Layer::Loaded;
     out.legacy_output = migrate_output_choice(out.config, {&user_layer, &settings_layer});
     migrate_face_mirror(out.config, {&user_layer, &settings_layer});
     migrate_gaze_smoothing(out.config, {&user_layer, &settings_layer});
+    // The mouth camera move is saved once, so that a later camera turn is not added to the old model-side one. A
+    // broken settings file stays as it is for inspection.
+    if (settings_state != Layer::Broken && migrate_face_camera(out.config, settings_layer, defaults ? *defaults : json())) {
+        std::string err;
+        if (write_settings(out.settings_file, settings_layer, &err)) {
+            LOG.info("config: moved the mouth camera settings into %s (saved to %s)",
+                     out.config["sources"]["face"].value("camera", "").c_str(), out.settings_file.c_str());
+            out.settings_loaded = true;
+        } else {
+            LOG.warn("config: moving the mouth camera settings: %s", err.c_str());
+        }
+    }
+    if (out.settings_loaded)
+        leaves(settings_layer, "", out.settings_overrides);
     if (defaults)
         out.type_fixes = fix_types(out.config, *defaults);
     return out;

@@ -142,3 +142,28 @@ TEST_CASE("crop drag under a flip maps back to a source box") {
     CHECK(inside(s, t.w, t.h));
     CHECK(same(t.box_to_view(s), d));
 }
+
+TEST_CASE("turn_crop follows a USB camera turn and flip") {
+    // A 432 x 240 frame with a box in it; a clockwise turn of the whole frame moves the box with it.
+    const Rect b0{76, 56, 225, 140};
+    const Rect b90 = turn_crop(b0, 432, 240, {}, {90, false, false});
+    CHECK(same(b90, {44, 76, 140, 225}));   // The turned frame is 240 x 432.
+    CHECK(inside(b90, 240, 432));
+    const Rect b180 = turn_crop(b90, 432, 240, {90, false, false}, {180, false, false});
+    CHECK(same(b180, {131, 44, 225, 140}));
+    const Rect b270 = turn_crop(b180, 432, 240, {180, false, false}, {270, false, false});
+    CHECK(same(b270, {56, 131, 140, 225}));
+    CHECK(same(turn_crop(b270, 432, 240, {270, false, false}, {}), b0));
+
+    // A flip twice comes back, and a flip alone mirrors the box in the frame.
+    const Rect fh = turn_crop(b0, 432, 240, {}, {0, true, false});
+    CHECK(same(fh, {131, 56, 225, 140}));
+    CHECK(same(turn_crop(fh, 432, 240, {0, true, false}, {}), b0));
+    const Rect fv = turn_crop(b0, 432, 240, {}, {0, false, true});
+    CHECK(same(fv, {76, 44, 225, 140}));
+    CHECK(same(turn_crop(fv, 432, 240, {0, false, true}, {}), b0));
+
+    // The same turn and flip together are one change, and no change leaves the box alone.
+    CHECK(same(turn_crop(b0, 432, 240, {}, {90, true, false}), {44, 131, 140, 225}));
+    CHECK(same(turn_crop(b0, 432, 240, {90, true, true}, {90, true, true}), b0));
+}

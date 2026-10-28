@@ -67,6 +67,28 @@ private:
     }
 };
 
+// The turn and flips of a USB camera, which its source applies before the crop: the flips, then a clockwise turn.
+struct CameraTurn {
+    int rotate = 0;   // Clockwise, in degrees.
+    bool flip_h = false, flip_v = false;
+    bool operator==(const CameraTurn &) const = default;
+};
+
+// Returns the crop box after the turn of a USB camera changes from a to b, so that it stays on the same part of the
+// face. The box is in the turned frame, and w x h is the frame size from the camera, before its turn.
+inline Rect turn_crop(Rect box, float w, float h, CameraTurn a, CameraTurn b) {
+    auto tf = [&](CameraTurn t) {
+        PreviewTransform p;
+        p.w = w;
+        p.h = h;
+        p.q = (4 - t.rotate / 90 % 4) % 4;   // A clockwise turn is the counter-clockwise turn the other way.
+        p.fh = t.flip_h;
+        p.fv = t.flip_v;
+        return p;
+    };
+    return tf(b).box_to_view(tf(a).box_to_source(box));
+}
+
 // What a laser drag on these pages moves.
 struct DragState {
     enum class Kind { None, Range, CropMove, CropCorner } kind = Kind::None;

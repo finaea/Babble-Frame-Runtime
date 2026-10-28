@@ -341,16 +341,19 @@ private:
     void render_resolution(Canvas &c, const Status &s);   // The modes of the USB mouth camera.
     // Returns true if the camera has no saved mode, or the source defaults that the Auto row saves.
     bool automatic_mode(const UsbCamera &cam) const;
+    // Returns the turn and flips of the camera, with any that this view just sent.
+    CameraTurn camera_turn(const UsbCamera &cam) const;
     void render_range(Canvas &c, Rect r, const std::string &pointer, const std::string &signal, bool signed_axis,
                       bool dim = false);
     // Draws a wide text field that opens the keyboard for the text setting id.
     void render_text_field(Canvas &c, Rect r, const std::string &id, const std::string &text,
                            const std::string &placeholder);
     void render_choice_row(Canvas &c, float y, float row_h, size_t index, const Choice &ch);
-    // Draws segments that set the string or number at pointer to one of the values.
+    // Draws segments that set the string or number at pointer to one of the values. current, if given, is the value
+    // to show instead of the one at pointer.
     float render_value_segments(Canvas &c, float right, float y, const std::string &pointer,
                                 const std::vector<std::string> &labels, const std::vector<nlohmann::json> &values,
-                                float seg_w = 160);   // Returns the left edge.
+                                float seg_w = 160, const nlohmann::json *current = nullptr);   // Returns the left edge.
     void render_tabs(Canvas &c, float right, const std::vector<std::string> &labels, int selected,
                      const std::string &action);
     Rect render_small_button(Canvas &c, float right, float y, const std::string &text, const std::string &action,

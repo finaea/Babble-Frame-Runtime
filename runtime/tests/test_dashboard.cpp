@@ -554,16 +554,18 @@ TEST_CASE("each USB camera opens an options page that sends all of its settings 
     s.cameras = {cam};
     CHECK(camera_setting_id("a/b~c") == "/sources/face/cameras/a~1b~0c");
 
-    // The button at the right of the camera row opens its options, and the rest of the row still selects it.
+    // The fork hides the options button, so the whole row selects the camera; the page is opened directly here.
     view.set_page(DashboardView::Page::Cameras);
     view.render(c, s, {}, std::nullopt);
     auto r = view.click({600, 282});
     REQUIRE(r.camera);
     CHECK(*r.camera == cam.id);
     view.render(c, s, {}, std::nullopt);
-    view.click({1090, 282});
-    CHECK(view.page() == DashboardView::Page::CameraOptions);
-    CHECK(view.options_camera() == cam.id);
+    r = view.click({1090, 282});
+    REQUIRE(r.camera);
+    CHECK(view.page() == DashboardView::Page::Cameras);
+    view.set_options_camera(cam.id);
+    view.set_page(DashboardView::Page::CameraOptions);
 
     // The rows are 82 px from y 124, at the right of the preview: Rotation, Horizontal Flip, Vertical Flip, Format,
     // Resolution, Frame Rate.
@@ -795,4 +797,56 @@ TEST_CASE("the Mouth page edits the stream URL in the stream mode") {
         if (auto r = view.click({800, y}); r.edit_text)
             edited = *r.edit_text == "/sources/face/url";
     CHECK(edited);
+}
+
+TEST_CASE("the Mouth page turns the USB camera, not the model, and the other modes turn the model") {
+    DashboardView view;
+    REQUIRE(view.load_fonts(kFonts));
+    Canvas c(DashboardView::kWidth, DashboardView::kHeight);
+    Status s{true, Worn::Yes, on(Health::Working, 120), on(Health::Working, 90)};
+    s.mouth_source = "usb";
+    UsbCamera cam{"1e45:0209@1-1", "Generic HD Camera", "1e45:0209", true};
+    cam.settings = {"mjpeg", 640, 480, 30, 0, false, false};
+    s.cameras = {cam};
+    s.usb_stream.state = UsbStream::State::Streaming;
+    s.usb_stream.camera = cam.id;
+    s.usb_stream.format = "mjpeg";
+    s.usb_stream.width = 640;
+    s.usb_stream.height = 480;
+    auto config = [&](const char *mode) {
+        nlohmann::json cfg = {{"pipelines", {{"face", {{"roi", {160, 120, 320, 240}}, {"roi_square", false}, {"rotate", 270}}}}},
+                              {"sources", {{"face", {{"mode", mode}}}}}};
+        PageData d;
+        d.config = std::make_shared<const nlohmann::json>(cfg);
+        view.set_page_data(std::move(d));
+        view.set_page(DashboardView::Page::Mouth);
+        view.render(c, s, {}, std::nullopt);
+    };
+    // The Rotate segments are 100 px wide, ending at the right margin: 0°, 90°, 180°, 270° from x 728.
+    auto seg = [](int k) { return 728.f + 100 * float(k) + 50; };
+
+    // USB mode: the Rotate card is the second card under the camera rows.
+    config("usb");
+    auto r = view.click({seg(1), 488});
+    REQUIRE(r.changes.size() == 2);   // USB mode ignores the model-side turn, so it is left as it is.
+    CHECK(r.changes[0].first == camera_setting_id(cam.id) + "/rotate");
+    CHECK(r.changes[0].second == 90);
+    CHECK(r.changes[1].first == "/pipelines/face/roi");
+    CHECK(r.changes[1].second == nlohmann::json({120, 160, 240, 320}));   // The box in the 480 x 640 turned frame.
+    for (const auto &ch : r.changes) {
+        CHECK(ch.first != "/pipelines/face/rotate");
+        CHECK(ch.first != "/pipelines/face/flip");
+    }
+
+    // The view keeps what it just sent, so the 90° segment is now the current one and sends nothing.
+    view.render(c, s, {}, std::nullopt);
+    r = view.click({seg(1), 488});
+    CHECK(r.changes.empty());
+
+    // Stream URL mode turns the model, with the label 90° as 270 because the model turns counter-clockwise.
+    config("url");
+    r = view.click({seg(1), 452});
+    REQUIRE(r.changes.size() == 1);
+    CHECK(r.changes[0].first == "/pipelines/face/rotate");
+    CHECK(r.changes[0].second == 270);
 }

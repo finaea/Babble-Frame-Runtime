@@ -54,6 +54,7 @@ private:
     float gain_ = 1.0f;
     int quarter_turns_ = 0;
     bool flip_h_ = false, flip_v_ = false;
+    bool usb_mode_ = false;   // The face source is a USB camera, which turns and flips the frame itself.
     std::unique_ptr<ExecuTorchRunner> runner_;
     std::unique_ptr<OneEuro> filter_;
     std::unique_ptr<face::Calibration> calibration_;

@@ -67,8 +67,8 @@ void DashboardView::render_tabs(Canvas &c, float right, const std::vector<std::s
 
 float DashboardView::render_value_segments(Canvas &c, float right, float y, const std::string &pointer,
                                            const std::vector<std::string> &labels, const std::vector<json> &values,
-                                           float seg_w) {
-    const json cur = setting(pointer, values.front());
+                                           float seg_w, const json *current) {
+    const json cur = current ? *current : setting(pointer, values.front());
     int selected = -1;
     for (size_t k = 0; k < values.size(); k++)
         if (cur == values[k])
@@ -274,7 +274,7 @@ void DashboardView::click_fork(const Hit &h, ClickResult &out, Point p) {
         fork_.mode_page = 0;
     } else if (a == "modes:prev" || a == "modes:next") {
         fork_.mode_page = std::max(0, fork_.mode_page + (a == "modes:next" ? 1 : -1));
-    } else if (a == "mode") {
+    } else if (a == "mode" || a == "turn") {
         // The items are [pointer, value] and go out in one click, so the camera restarts once.
         for (const json &item : h.data)
             send(out, item[0].get<std::string>(), item[1]);

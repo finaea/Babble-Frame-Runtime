@@ -498,3 +498,48 @@ TEST_CASE("the mono face pipeline crops the ROI and rotates before resizing") {
     CHECK(in[112 * 224 + 10] == 1.0f);
     CHECK_FALSE(old->set_option("mirror", false));
 }
+
+TEST_CASE("the mono face pipeline skips its own rotate and flip in USB mode") {
+    const nlohmann::json threads = nlohmann::json::object();
+    ExpressionState state;
+    StatsRegistry stats;
+    LatestSlot<StereoFrame> slot;
+    auto make = [&](nlohmann::json cfg) {
+        cfg["from"] = "face";
+        cfg["model"] = "face_mono_224_fp16.pte";
+        PipelineDeps deps{"face", threads, [&](const std::string &s) { return s == "face" ? &slot : nullptr; }, state,
+                          stats, {}, BABBLE_MODELS_DIR};
+        auto p = std::make_unique<BabbleMonoFace>(cfg, std::move(deps));
+        REQUIRE(p->init());
+        return p;
+    };
+    // The left half is bright, so a mirror and a turn each move it.
+    std::vector<uint8_t> px(240 * 240);
+    for (int y = 0; y < 240; y++)
+        for (int x = 0; x < 240; x++)
+            px[size_t(y) * 240 + size_t(x)] = x < 120 ? 255 : 0;
+    Frame f;
+    f.width = f.height = f.stride = 240;
+    f.data = px.data();
+    f.size = px.size();
+    auto input = [&](BabbleMonoFace &p) {
+        std::vector<float> in(224 * 224);
+        p.prepare(f, in.data());
+        return in;
+    };
+    const std::vector<float> plain = input(*make({}));
+    auto turned = make({{"rotate", 90}, {"flip", "h"}});
+    const std::vector<float> turn_in = input(*turned);   // Before any source_mode, the turn applies.
+    REQUIRE(plain != turn_in);
+
+    CHECK(turned->set_option("source_mode", "usb"));
+    CHECK(input(*turned) == plain);
+    CHECK(turned->set_option("source_mode", "url"));
+    CHECK(input(*turned) == turn_in);
+    CHECK(turned->set_option("source_mode", "usb"));
+    CHECK(input(*turned) == plain);
+    CHECK(turned->set_option("source_mode", "pc"));
+    CHECK(input(*turned) == turn_in);
+    CHECK_FALSE(turned->set_option("source_mode", 5));
+    CHECK(input(*turned) == turn_in);   // A refused value changes nothing.
+}

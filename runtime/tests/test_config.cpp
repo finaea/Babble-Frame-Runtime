@@ -4,6 +4,7 @@
 #include "defaults_json.h"
 #include "platform/diagnostics.h"
 #include "platform/steamvr_settings.h"
+#include "ui/fork_pages.h"
 
 #include <filesystem>
 #include <fstream>
@@ -388,4 +389,149 @@ TEST_CASE("diag::redacted hides secret values at any depth and leaves the config
 
     CHECK(diag::log_value("/sources/face/password", "hunter2-pw") == "(not logged)");
     CHECK(diag::log_value("/capture/fps", 30) == "30");
+}
+
+namespace {
+
+json face_defaults() {
+    std::string err;
+    auto d = parse_json(kDefaultsJson, &err);
+    REQUIRE_MESSAGE(d.has_value(), err);
+    return *d;
+}
+
+std::string slurp(const std::filesystem::path &p) {
+    std::ifstream in(p);
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+
+// Runs migrate_face_camera on a config that holds only the given sources.face and pipelines.face, as the settings.
+struct FaceMigration {
+    json config, settings, defaults = face_defaults();
+    bool changed = false;
+    FaceMigration(json face_src, json face_pipe) {
+        config = {{"sources", {{"face", std::move(face_src)}}}, {"pipelines", {{"face", std::move(face_pipe)}}}};
+        settings = config;
+        changed = migrate_face_camera(config, settings, defaults);
+    }
+    const json &cam(const std::string &id) const { return config["sources"]["face"]["cameras"][id]; }
+    const json &roi() const { return config["pipelines"]["face"]["roi"]; }
+};
+
+json rounded(const ui::Rect &t) {
+    return json::array({std::lround(t.x), std::lround(t.y), std::lround(t.w), std::lround(t.h)});
+}
+
+}
+
+TEST_CASE("load_config moves the fork's mouth camera settings into the camera entry, once") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("babble_cfg_cam_" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    const fs::path settings = dir / "settings.json";
+    const std::string id = "0c45:6366:SN0001";
+    std::ofstream(settings) << R"({"sources":{"face":{"mode":"usb","camera":"0c45:6366:SN0001","format":"yuyv",)"
+                               R"("width":432,"height":240,"fps":30}},)"
+                               R"("pipelines":{"face":{"rotate":270,"flip":"none","roi":[76,56,225,140]}}})";
+    const ConfigLoad cl = load_config(dir / "none.json", settings);
+    const json expect_cam = {{"format", "yuy2"}, {"width", 432}, {"height", 240}, {"fps", 30},
+                             {"rotate", 90},     {"flip_h", false}, {"flip_v", false}};
+    const json saved = json::parse(slurp(settings));
+    for (const json *doc : {&cl.config, &saved}) {
+        CHECK((*doc)["sources"]["face"]["cameras"][id] == expect_cam);
+        CHECK((*doc)["pipelines"]["face"]["rotate"] == 0);
+        CHECK((*doc)["pipelines"]["face"]["flip"] == "none");
+        CHECK((*doc)["pipelines"]["face"]["roi"] == json({44, 76, 140, 225}));
+        CHECK((*doc)["sources"]["face"]["width"] == 240);
+        CHECK((*doc)["sources"]["face"]["height"] == 240);
+        CHECK((*doc)["sources"]["face"]["fps"] == 30);
+        CHECK_FALSE((*doc)["sources"]["face"].contains("format"));
+    }
+
+    // Loading the written file again moves nothing and leaves the file alone.
+    const std::string written = slurp(settings);
+    const ConfigLoad again = load_config(dir / "none.json", settings);
+    CHECK(slurp(settings) == written);
+    CHECK(again.config["sources"]["face"]["cameras"][id] == expect_cam);
+    CHECK(again.config["pipelines"]["face"]["roi"] == json({44, 76, 140, 225}));
+    fs::remove_all(dir);
+}
+
+TEST_CASE("the model-side turn becomes the clockwise camera turn") {
+    const std::string id = "0c45:6366:SN0001";
+    const json src = {{"mode", "usb"}, {"camera", id}, {"width", 432}, {"height", 240}};
+    // Counter-clockwise 90, 180, 270 are clockwise 270, 180, 90, and the box lands where the preview maths puts it.
+    for (auto [model, cw] : {std::pair{90, 270}, {180, 180}, {270, 90}}) {
+        FaceMigration m(src, {{"rotate", model}, {"flip", "none"}, {"roi", {76, 56, 225, 140}}});
+        REQUIRE(m.changed);
+        CHECK(m.cam(id)["rotate"] == cw);
+        CHECK(m.config["pipelines"]["face"]["rotate"] == 0);
+        CHECK(m.roi() == rounded(ui::turn_crop({76, 56, 225, 140}, 432, 240, {}, {cw, false, false})));
+    }
+    // Flips h, v and hv become flip_h and flip_v, and the box follows with the flips before the turn.
+    for (auto [flip, fh, fv] : {std::tuple{"h", true, false}, {"v", false, true}, {"hv", true, true}}) {
+        FaceMigration m(src, {{"rotate", 90}, {"flip", flip}, {"roi", {76, 56, 100, 100}}});
+        REQUIRE(m.changed);
+        CHECK(m.cam(id)["flip_h"] == fh);
+        CHECK(m.cam(id)["flip_v"] == fv);
+        CHECK(m.config["pipelines"]["face"]["flip"] == "none");
+        CHECK(m.roi() == rounded(ui::turn_crop({76, 56, 100, 100}, 432, 240, {}, {270, fh, fv})));
+        CHECK(m.settings["pipelines"]["face"]["roi"] == m.roi());
+    }
+    // A box that does not fit the saved frame becomes the whole frame.
+    FaceMigration big(src, {{"rotate", 90}, {"flip", "none"}, {"roi", {400, 0, 100, 100}}});
+    CHECK(big.roi() == json::array());
+}
+
+TEST_CASE("the Babble tracker keeps its default mirror under the model-side flip") {
+    const json base = {{"mode", "usb"}, {"width", 240}, {"height", 240}};
+    for (const char *id : {"303a:8000:SN1", "303a:8000@1-2"}) {
+        json src = base;
+        src["camera"] = id;
+        src["tracker_flip_h"] = true;
+        FaceMigration plain(src, {{"rotate", 90}, {"flip", "none"}});
+        CHECK(plain.cam(id)["flip_h"] == true);
+        FaceMigration mirrored(src, {{"rotate", 0}, {"flip", "h"}});
+        CHECK(mirrored.cam(id)["flip_h"] == false);
+        src["tracker_flip_h"] = false;
+        FaceMigration off(src, {{"rotate", 90}, {"flip", "h"}});
+        CHECK(off.cam(id)["flip_h"] == true);
+    }
+    // Another camera has no default mirror.
+    json src = base;
+    src["camera"] = "0c45:6366:SN1";
+    FaceMigration other(src, {{"rotate", 90}, {"flip", "none"}});
+    CHECK(other.cam("0c45:6366:SN1")["flip_h"] == false);
+}
+
+TEST_CASE("the mouth camera move leaves everything alone without a camera, in URL mode or with a saved turn") {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("babble_cfg_cam2_" + std::to_string(getpid()));
+    fs::create_directories(dir);
+    const fs::path settings = dir / "settings.json";
+    const std::string id = "0c45:6366:SN0001";
+    const std::vector<std::string> texts = {
+        R"({"sources":{"face":{"mode":"usb"}},"pipelines":{"face":{"rotate":270,"roi":[1,2,30,40]}}})",
+        R"({"sources":{"face":{"mode":"url","camera":"0c45:6366:SN0001"}},"pipelines":{"face":{"rotate":270}}})",
+        R"({"sources":{"face":{"mode":"usb","camera":"0c45:6366:SN0001","cameras":{"0c45:6366:SN0001":{"rotate":0}}}},)"
+        R"("pipelines":{"face":{"rotate":270,"flip":"h"}}})"};
+    for (const std::string &text : texts) {
+        std::ofstream(settings, std::ios::trunc) << text;
+        const ConfigLoad cl = load_config(dir / "none.json", settings);
+        CHECK(slurp(settings) == text);   // Not rewritten.
+        CHECK(cl.config["pipelines"]["face"]["rotate"] == 270);
+        CHECK(cl.config["sources"]["face"]["cameras"].value(id, json::object()).value("rotate", 0) == 0);
+    }
+
+    // A broken settings file stays as it is.
+    const std::string broken = R"({"sources":{"face":{"camera":"0c45:6366:SN0001","format":"yuyv"}})";
+    std::ofstream(settings, std::ios::trunc) << broken;
+    CHECK_FALSE(load_config(dir / "none.json", settings).settings_loaded);
+    CHECK(slurp(settings) == broken);
+
+    // The old format key goes even when there is no turn to move.
+    std::ofstream(settings, std::ios::trunc) << R"({"sources":{"face":{"camera":"0c45:6366:SN0001","format":"auto"}}})";
+    CHECK_FALSE(load_config(dir / "none.json", settings).config["sources"]["face"].contains("format"));
+    CHECK_FALSE(json::parse(slurp(settings))["sources"]["face"].contains("format"));
+    fs::remove_all(dir);
 }

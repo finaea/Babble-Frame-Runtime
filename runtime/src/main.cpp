@@ -458,6 +458,10 @@ int main(int argc, char **argv) {
         else
             LOG.error("pipeline %s: not started", it.key().c_str());
     }
+    // The face model skips its own rotate and flip while the face source is a USB camera, which turns the frame.
+    const json face_mode = section(section(cfg, "sources"), "face").value("mode", json("usb"));
+    for (auto &p : pipelines)
+        p->set_option("source_mode", face_mode);
 
     struct SourceEntry {
         std::string name;
@@ -800,6 +804,8 @@ int main(int argc, char **argv) {
             const std::string prefix = "/pipelines/" + p->name() + "/";
             if (id.starts_with(prefix) && p->set_option(id.substr(prefix.size()), value))
                 applied = true;
+            if (id == "/sources/face/mode" && applied)
+                p->set_option("source_mode", value);   // The face model skips its rotate and flip in USB mode.
         }
         for (auto &k : sinks) {
             const std::string prefix = "/sinks/" + k.name + "/";
